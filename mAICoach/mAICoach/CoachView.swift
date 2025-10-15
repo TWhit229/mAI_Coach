@@ -8,12 +8,12 @@ struct CoachView: View {
                 .scaledToFit()
                 .frame(width: 100)
 
-            // Big “Bench” button (hook up action later)
-            BigRectButton(title: "Bench", systemImage: "dumbbell")
-                .onTapGesture {
-                    // TODO: start Bench flow (camera/model) here
-                    print("Bench tapped")
-                }
+            // Tapping this pushes BenchSessionView onto the nav stack
+            NavigationLink {
+                BenchSessionView()
+            } label: {
+                BigRectButton(title: "Bench", systemImage: "dumbbell")
+            }
 
             Spacer()
         }
