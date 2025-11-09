@@ -25,8 +25,9 @@ jobs:
           
       - name: Lint and format check
         run: |
-          ruff .
+          ruff check .
           black --check .
+
 
       - name: Run smoke tests
         run: |
