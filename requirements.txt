@@ -1,0 +1,9 @@
+mediapipe>=0.10
+opencv-python>=4.8
+numpy>=1.26
+Pillow>=10.0
+matplotlib>=3.8
+
+pytest>=8.0
+black>=24.0
+ruff>=0.6
