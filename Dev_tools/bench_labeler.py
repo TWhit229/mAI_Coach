@@ -436,6 +436,11 @@ class LabelerApp:
         )
         self.play_button.pack(side=tk.LEFT, padx=5, pady=2)
 
+        self.replay_button = ttk.Button(
+            controls, text="Replay", command=self.replay_video
+        )
+        self.replay_button.pack(side=tk.LEFT, padx=2, pady=2)
+
         self.fwd_half_button = ttk.Button(
             controls, text="+0.5s", command=lambda: self.step_seconds(0.5)
         )
@@ -500,7 +505,7 @@ class LabelerApp:
         add("movement:", self.movement_cb)
 
         # overall_quality
-        self.quality_var = tk.StringVar(value="4")
+        self.quality_var = tk.StringVar(value="3")
         self.quality_cb = ttk.Combobox(
             form, textvariable=self.quality_var,
             values=QUALITY_OPTIONS, state="readonly"
@@ -513,7 +518,7 @@ class LabelerApp:
         add("load_lbs:", self.load_entry)
 
         # rpe
-        self.rpe_var = tk.StringVar(value="8.0")
+        self.rpe_var = tk.StringVar(value="1.0")
         self.rpe_cb = ttk.Combobox(
             form, textvariable=self.rpe_var,
             values=RPE_OPTIONS, state="readonly"
@@ -521,7 +526,7 @@ class LabelerApp:
         add("RPE:", self.rpe_cb)
 
         # camera_angle
-        self.camera_var = tk.StringVar(value="front_45")
+        self.camera_var = tk.StringVar(value="front")
         self.camera_cb = ttk.Combobox(
             form, textvariable=self.camera_var,
             values=CAMERA_ANGLE_OPTIONS, state="readonly"
@@ -659,16 +664,16 @@ class LabelerApp:
         self.movement_var.set(d.get("movement") or MOVEMENT_OPTIONS[0])
 
         q = d.get("overall_quality")
-        self.quality_var.set(str(q) if q is not None else "4")
+        self.quality_var.set(str(q) if q is not None else "3")
 
         ll = d.get("load_lbs")
         self.load_var.set("" if ll is None else str(ll))
 
         rpe = d.get("rpe")
-        self.rpe_var.set(str(rpe) if rpe is not None else "8.0")
+        self.rpe_var.set(str(rpe) if rpe is not None else "1.0")
 
         cam = d.get("camera_angle")
-        self.camera_var.set(cam if cam else "front_45")
+        self.camera_var.set(cam if cam else "front")
 
         lens = d.get("lens")
         self.lens_var.set(lens if lens else "0.5")
@@ -768,6 +773,15 @@ class LabelerApp:
     def toggle_play(self):
         self.playing = not self.playing
         self.play_button.config(text="Pause" if self.playing else "Play")
+
+    def replay_video(self):
+        """Restart playback from the beginning of the current video."""
+        if self.total_frames <= 0:
+            return
+        self.current_frame = 0
+        self.show_frame(0)
+        self.playing = True
+        self.play_button.config(text="Pause")
 
     def play_loop(self):
         # adjust delay by playback speed
