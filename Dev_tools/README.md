@@ -8,11 +8,23 @@ Tkinter utilities for reviewing and labeling lifting videos live inside this `De
 - System `ffmpeg` binary in `PATH` (needed for `auto_cut_video.py` exports). On macOS use `brew install ffmpeg`, on Windows install from https://ffmpeg.org.
 - Python packages listed in `requirements.txt`.
 
-Install the Python deps inside your preferred virtual environment:
+Quick start (auto-detects Windows/macOS/Linux + shell):
 
 ```bash
 cd Dev_tools
-python3 -m venv .venv            # optional but recommended
+python setup_env.py
+```
+
+The script will:
+1. Create (or reuse) `.venv` in this folder.
+2. Install everything from `requirements.txt` inside that venv.
+3. Print the exact activation command for your shell.
+
+Prefer to do the steps manually? Skip the script and run:
+
+```bash
+cd Dev_tools
+python3 -m venv .venv            # Windows: py -3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
