@@ -95,16 +95,40 @@ class LabelAdminPanel(tk.Toplevel):
             listbox.insert(tk.END, text)
             entry.delete(0, tk.END)
 
+        def rename_selected():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            text = entry.get().strip()
+            if not text:
+                return
+            idx = sel[0]
+            listbox.delete(idx)
+            listbox.insert(idx, text)
+            listbox.selection_clear(0, tk.END)
+            listbox.selection_set(idx)
+
         def remove_selected():
             sel = list(listbox.curselection())
             for idx in reversed(sel):
                 listbox.delete(idx)
 
+        def populate_entry_from_selection(_event=None):
+            sel = listbox.curselection()
+            entry.delete(0, tk.END)
+            if sel:
+                entry.insert(0, listbox.get(sel[0]))
+
+        listbox.bind("<<ListboxSelect>>", populate_entry_from_selection)
+
         add_btn = ttk.Button(frame, text="Add", command=add_item)
         add_btn.grid(row=1, column=1, padx=(5, 0), sticky="w")
 
+        rename_btn = ttk.Button(frame, text="Rename Selected", command=rename_selected)
+        rename_btn.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+
         rm_btn = ttk.Button(frame, text="Remove Selected", command=remove_selected)
-        rm_btn.grid(row=2, column=0, columnspan=2, sticky="ew")
+        rm_btn.grid(row=3, column=0, columnspan=2, sticky="ew")
 
         self._sections[key] = listbox
 
