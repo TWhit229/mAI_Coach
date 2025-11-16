@@ -1043,7 +1043,7 @@ def main():
 
     # 4) Launch labeling GUI
     root = tk.Tk()
-    app = LabelerApp(root, videos, dataset_dir)
+    LabelerApp(root, videos, dataset_dir)
     root.mainloop()
 
 

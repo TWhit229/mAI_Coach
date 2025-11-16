@@ -25,9 +25,25 @@ IS_WINDOWS = os.name == "nt"
 
 
 def run(cmd, env=None):
-    """Run a subprocess and raise on failure."""
-    print(f"[setup] Running: {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+    """Run a subprocess and raise on failure after basic argument validation."""
+    if not isinstance(cmd, (list, tuple)):
+        raise TypeError("Command must be a list/tuple of arguments.")
+
+    dangerous_chars = {";", "&", "|", "$", "`", ">", "<"}
+    sanitized = []
+    for arg in cmd:
+        if isinstance(arg, Path):
+            arg_str = str(arg)
+        elif isinstance(arg, str):
+            arg_str = arg
+        else:
+            raise TypeError(f"Command argument is not a string/path: {arg!r}")
+        if any(ch in arg_str for ch in dangerous_chars):
+            raise ValueError(f"Unsafe character in command argument: {arg_str!r}")
+        sanitized.append(arg_str)
+
+    print(f"[setup] Running: {' '.join(sanitized)}")
+    subprocess.run(sanitized, cwd=ROOT, env=env, check=True)
 
 
 def ensure_venv():

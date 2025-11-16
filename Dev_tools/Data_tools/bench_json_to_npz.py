@@ -11,10 +11,17 @@ Convert labeled bench JSON reps into normalized numpy arrays for model training.
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 
 import numpy as np
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from label_config import load_label_config
 
 try:
     import tkinter as tk
@@ -60,42 +67,8 @@ BENCH_LANDMARK_IDS = [
     R_HIP,
 ]
 
-# Must match the ISSUE_OPTIONS list in bench_labeler.py
-ISSUE_OPTIONS = [
-    "01_angle_issues",
-    "02_tracking_unreliable",
-    "03_no_major_issues",
-    "04_hands_too_wide",
-    "05_hands_too_narrow",
-    "06_grip_uneven",
-    "07_body_placement_too_forward",
-    "08_body_placement_too_backward",
-    "09_bar_path_too_forward",
-    "10_bar_path_too_backward",
-    "11_elbows_flared",
-    "12_elbows_flared_bottom",
-    "13_elbows_flared_lockout",
-    "14_elbows_tucked",
-    "15_elbows_tucked_excessive",
-    "16_pause_too_long",
-    "17_pause_too_short",
-    "18_no_pause_on_chest",
-    "19_bar_depth_insufficient",
-    "20_bar_depth_excessive",
-    "21_barbell_tilt_right",
-    "22_barbell_tilt_left",
-    "23_uneven_lockout",
-    "24_hips_off_bench",
-    "25_descent_too_fast",
-    "26_bounce_off_chest",
-    "27_incomplete_lockout",
-    "28_wrists_tilted_forward",
-    "29_wrists_tilted_backward",
-    "30_right_elbow_in",
-    "31_left_elbow_in",
-    "32_right_elbow_out",
-    "33_left_elbow_out",
-]
+# Must match the ISSUE_OPTIONS list in bench_labeler.py. Load from shared config to stay in sync.
+ISSUE_OPTIONS = load_label_config()["issues"]
 
 ISSUE_INDEX = {name: i for i, name in enumerate(ISSUE_OPTIONS)}
 

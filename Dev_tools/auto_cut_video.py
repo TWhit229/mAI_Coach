@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-import argparse, subprocess, time, sys
+import argparse
+import subprocess
+import time
+import sys
 from pathlib import Path
 
 import cv2
@@ -65,6 +68,8 @@ def pick_output_dir():
 
 
 def cut(src, dst, s_ms, e_ms):
+    src = Path(src).resolve()
+    dst = Path(dst).resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
@@ -89,7 +94,8 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         return 0, False
 
     cap = cv2.VideoCapture(str(video))
-    assert cap.isOpened(), f"Cannot open {video}"
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open {video}")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -232,6 +238,7 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
             try:
                 scrub_var.set(get_frame_idx())
             except tk.TclError:
+                # Widget can disappear while window tears down; harmless to skip
                 pass
 
     def jump_ms(delta_ms):
@@ -244,6 +251,7 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
             try:
                 scrub_var.set(get_frame_idx())
             except tk.TclError:
+                # Widget can disappear while window tears down; harmless to skip
                 pass
 
     def slower(event=None):
@@ -354,6 +362,7 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
             try:
                 scrub_var.set(get_frame_idx())
             except tk.TclError:
+                # Widget can disappear while window tears down; harmless to skip
                 pass
 
         root.after(10, update)
