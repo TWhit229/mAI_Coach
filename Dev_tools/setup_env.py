@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 REQUIREMENTS = ROOT / "requirements.txt"
+VENDOR_DIR = ROOT / "vendor"
 
 IS_WINDOWS = os.name == "nt"
 
@@ -67,7 +68,19 @@ def install_requirements():
     if not REQUIREMENTS.exists():
         raise SystemExit(f"Missing requirements file: {REQUIREMENTS}")
     run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
+    install_vendor_wheels(py)
     run([str(py), "-m", "pip", "install", "-r", str(REQUIREMENTS)])
+
+
+def install_vendor_wheels(py: Path):
+    """Install optional offline wheels (e.g., mediapipe) before the main requirements."""
+    if not VENDOR_DIR.exists():
+        return
+
+    mediapipe_wheel = next(VENDOR_DIR.glob("mediapipe*.whl"), None)
+    if mediapipe_wheel:
+        print(f"[setup] Installing mediapipe from local wheel: {mediapipe_wheel.name}")
+        run([str(py), "-m", "pip", "install", str(mediapipe_wheel)])
 
 
 def activation_hint():
