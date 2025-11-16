@@ -38,22 +38,21 @@ try:
     from tkinter import ttk, messagebox, filedialog
 except Exception as e:
     raise SystemExit(
-        f"Failed to import tkinter: {e}\n"
-        "Your Python may not have Tk support."
+        f"Failed to import tkinter: {e}\n" "Your Python may not have Tk support."
     )
 
 try:
     from PIL import Image, ImageTk
 except Exception as e:
     raise SystemExit(
-        f"Failed to import Pillow (PIL): {e}\n"
-        "Install with: pip install pillow"
+        f"Failed to import Pillow (PIL): {e}\n" "Install with: pip install pillow"
     )
 
 from label_config import load_label_config, ensure_config_file
 
 
 # -------------------- Pose export helpers -------------------------------------
+
 
 def lowpass_ema(prev: np.ndarray, curr: np.ndarray, alpha: float) -> np.ndarray:
     if prev is None or prev.shape != curr.shape:
@@ -66,11 +65,9 @@ def mp_image_from_bgr(frame_bgr: np.ndarray):
     return mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
 
-def build_landmarker(model_path: Path,
-                     det: float,
-                     prs: float,
-                     trk: float,
-                     output_seg_masks: bool = False) -> PoseLandmarker:
+def build_landmarker(
+    model_path: Path, det: float, prs: float, trk: float, output_seg_masks: bool = False
+) -> PoseLandmarker:
     base = BaseOptions(model_asset_path=str(model_path))
     options = PoseLandmarkerOptions(
         base_options=base,
@@ -167,7 +164,6 @@ def export_dataset_json(
     base = {
         "rep_id": video_path.stem,
         "video_path": str(video_path),
-
         # label fields (initially defaulted)
         "movement": movement_name,
         "overall_quality": None,
@@ -177,7 +173,6 @@ def export_dataset_json(
         "camera_angle": None,
         "lens": None,
         "issue_events": [],  # [{issue, frame_index, time_ms}]
-
         # pose metadata + frames
         "pose_model_file": model_path.name,
         "fps": fps,
@@ -372,6 +367,7 @@ MOVEMENT_MODEL_PRESETS = {
 
 # -------------------- Labeling UI --------------------------------------------
 
+
 class LabelerApp:
     def __init__(self, root, video_paths: List[Path], dataset_dir: Path):
         self.root = root
@@ -384,9 +380,9 @@ class LabelerApp:
         # all frames for current video (BGR images)
         self.frames_bgr: List[np.ndarray] = []
         self.total_frames = 0
-        self.current_frame = 0   # index into frames_bgr
+        self.current_frame = 0  # index into frames_bgr
 
-        self.playing = False     # start paused
+        self.playing = False  # start paused
         self.fps = 30.0
         self.playback_speed = 1.0
         self.tk_img = None
@@ -431,9 +427,7 @@ class LabelerApp:
         )
         self.back_half_button.pack(side=tk.LEFT, padx=2, pady=2)
 
-        self.play_button = ttk.Button(
-            controls, text="Play", command=self.toggle_play
-        )
+        self.play_button = ttk.Button(controls, text="Play", command=self.toggle_play)
         self.play_button.pack(side=tk.LEFT, padx=5, pady=2)
 
         self.replay_button = ttk.Button(
@@ -499,16 +493,20 @@ class LabelerApp:
         # movement
         self.movement_var = tk.StringVar(value=MOVEMENT_OPTIONS[0])
         self.movement_cb = ttk.Combobox(
-            form, textvariable=self.movement_var,
-            values=MOVEMENT_OPTIONS, state="readonly"
+            form,
+            textvariable=self.movement_var,
+            values=MOVEMENT_OPTIONS,
+            state="readonly",
         )
         add("movement:", self.movement_cb)
 
         # overall_quality
         self.quality_var = tk.StringVar(value="3")
         self.quality_cb = ttk.Combobox(
-            form, textvariable=self.quality_var,
-            values=QUALITY_OPTIONS, state="readonly"
+            form,
+            textvariable=self.quality_var,
+            values=QUALITY_OPTIONS,
+            state="readonly",
         )
         add("overall_quality:", self.quality_cb)
 
@@ -520,24 +518,24 @@ class LabelerApp:
         # rpe
         self.rpe_var = tk.StringVar(value="1.0")
         self.rpe_cb = ttk.Combobox(
-            form, textvariable=self.rpe_var,
-            values=RPE_OPTIONS, state="readonly"
+            form, textvariable=self.rpe_var, values=RPE_OPTIONS, state="readonly"
         )
         add("RPE:", self.rpe_cb)
 
         # camera_angle
         self.camera_var = tk.StringVar(value="front")
         self.camera_cb = ttk.Combobox(
-            form, textvariable=self.camera_var,
-            values=CAMERA_ANGLE_OPTIONS, state="readonly"
+            form,
+            textvariable=self.camera_var,
+            values=CAMERA_ANGLE_OPTIONS,
+            state="readonly",
         )
         add("camera_angle:", self.camera_cb)
 
         # lens
         self.lens_var = tk.StringVar(value="0.5")
         self.lens_cb = ttk.Combobox(
-            form, textvariable=self.lens_var,
-            values=LENS_OPTIONS, state="readonly"
+            form, textvariable=self.lens_var, values=LENS_OPTIONS, state="readonly"
         )
         add("lens:", self.lens_cb)
 
@@ -560,8 +558,10 @@ class LabelerApp:
         )
         self.tag_issue_var = tk.StringVar(value=ISSUE_OPTIONS[0])
         self.tag_issue_cb = ttk.Combobox(
-            form, textvariable=self.tag_issue_var,
-            values=ISSUE_OPTIONS, state="readonly"
+            form,
+            textvariable=self.tag_issue_var,
+            values=ISSUE_OPTIONS,
+            state="readonly",
         )
         self.tag_issue_cb.grid(row=row, column=1, sticky="ew", pady=2)
         row += 1
@@ -594,10 +594,14 @@ class LabelerApp:
         btn_frame = ttk.Frame(form)
         btn_frame.grid(row=row, column=0, columnspan=2, pady=8, sticky="ew")
 
-        self.prev_button = ttk.Button(btn_frame, text="Previous", command=self.prev_video)
+        self.prev_button = ttk.Button(
+            btn_frame, text="Previous", command=self.prev_video
+        )
         self.prev_button.pack(side=tk.LEFT, padx=5)
 
-        self.save_next_button = ttk.Button(btn_frame, text="Save + Next", command=self.save_and_next)
+        self.save_next_button = ttk.Button(
+            btn_frame, text="Save + Next", command=self.save_and_next
+        )
         self.save_next_button.pack(side=tk.RIGHT, padx=5)
 
     # ---------------- video / dataset loading ----------------
@@ -651,10 +655,14 @@ class LabelerApp:
         self.scrub_scale.config(from_=0, to=max(0, self.total_frames - 1))
 
         # Form values
-        self.rep_id_var.set(self.dataset.get("rep_id", vpath.stem) if self.dataset else vpath.stem)
+        self.rep_id_var.set(
+            self.dataset.get("rep_id", vpath.stem) if self.dataset else vpath.stem
+        )
         self.load_form_from_dataset()
 
-        self.info_label.config(text=f"Video {self.current_index + 1} / {len(self.video_paths)}")
+        self.info_label.config(
+            text=f"Video {self.current_index + 1} / {len(self.video_paths)}"
+        )
 
         # Show first frame immediately
         self.show_frame(self.current_frame)
@@ -718,7 +726,6 @@ class LabelerApp:
         self.scrub_scale.set(fi)
         if self._scrub_release_id is None:
             self._scrub_release_id = self.root.after_idle(self._release_scrub_lock)
-
 
     def _release_scrub_lock(self):
         self._updating_scale = False
@@ -906,8 +913,8 @@ class LabelerApp:
             self.root.quit()
 
 
-
 # -------------------- main ----------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1009,7 +1016,9 @@ def main():
     print(f"[INFO] Found {len(videos)} videos.")
     print(f"[INFO] Movement preset: {args.movement}")
     print(f"[INFO] Using model: {args.model_variant} ({model_path.name})")
-    print(f"[INFO] det={args.det} prs={args.prs} trk={args.trk} ema={args.ema} seg={args.seg}")
+    print(
+        f"[INFO] det={args.det} prs={args.prs} trk={args.trk} ema={args.ema} seg={args.seg}"
+    )
 
     # 2) Choose output folder for JSONs (unless provided)
     if args.output_dir:

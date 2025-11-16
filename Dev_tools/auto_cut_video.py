@@ -11,12 +11,14 @@ import cv2
 try:
     import tkinter as tk
     from tkinter import filedialog
+
     TK_AVAILABLE = True
 except Exception:
     TK_AVAILABLE = False
 
 try:
     from PIL import Image, ImageTk
+
     PIL_AVAILABLE = True
 except Exception:
     PIL_AVAILABLE = False
@@ -73,11 +75,17 @@ def cut(src, dst, s_ms, e_ms):
     dst.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
-            "ffmpeg", "-y",
-            "-ss", f"{s_ms/1000:.3f}",
-            "-to", f"{e_ms/1000:.3f}",
-            "-i", str(src),
-            "-c", "copy", str(dst),
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{s_ms/1000:.3f}",
+            "-to",
+            f"{e_ms/1000:.3f}",
+            "-i",
+            str(src),
+            "-c",
+            "copy",
+            str(dst),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -88,7 +96,9 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_last: bool):
+def process_one(
+    video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_last: bool
+):
     if not TK_AVAILABLE or not PIL_AVAILABLE:
         print("tkinter and pillow are required for this UI.")
         return 0, False
@@ -100,7 +110,9 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     frame_interval = 1.0 / (fps if fps > 0 else 30.0)
-    duration_ms = (n_frames / fps) * 1000 if (fps > 0 and n_frames > 0) else float("inf")
+    duration_ms = (
+        (n_frames / fps) * 1000 if (fps > 0 and n_frames > 0) else float("inf")
+    )
 
     def get_time_ms():
         return cap.get(cv2.CAP_PROP_POS_MSEC)
@@ -109,7 +121,9 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         return int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
     def seek_ms(t_ms):
-        t_ms = clamp(t_ms, 0, duration_ms if duration_ms != float("inf") else max(0, t_ms))
+        t_ms = clamp(
+            t_ms, 0, duration_ms if duration_ms != float("inf") else max(0, t_ms)
+        )
         cap.set(cv2.CAP_PROP_POS_MSEC, t_ms)
         ok, frame = cap.read()
         return ok, frame
@@ -182,8 +196,8 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         "playing": True,
         "speed": init_speed,
         "last_frame": first,
-        "quit_video": False,   # finish this video
-        "abort_all": False,    # stop processing remaining videos
+        "quit_video": False,  # finish this video
+        "abort_all": False,  # stop processing remaining videos
         "next_frame_time": time.perf_counter() + frame_interval / max(0.1, init_speed),
         "scrubbing": False,
     }
@@ -205,7 +219,9 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         ok2, frame2 = seek_frame(idx)
         if ok2:
             state["last_frame"] = frame2
-        state["next_frame_time"] = time.perf_counter() + frame_interval / max(0.1, state["speed"])
+        state["next_frame_time"] = time.perf_counter() + frame_interval / max(
+            0.1, state["speed"]
+        )
 
     scrub.bind("<ButtonPress-1>", scrub_press)
     scrub.bind("<ButtonRelease-1>", scrub_release)
@@ -213,7 +229,9 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
     # Playback controls
     def play(event=None):
         state["playing"] = True
-        state["next_frame_time"] = time.perf_counter() + frame_interval / max(0.1, state["speed"])
+        state["next_frame_time"] = time.perf_counter() + frame_interval / max(
+            0.1, state["speed"]
+        )
 
     def pause(event=None):
         state["playing"] = False
@@ -270,29 +288,55 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         state["abort_all"] = True
 
     # Buttons
-    tk.Button(btn_frame, text="Play", command=play).grid(row=0, column=0, padx=2, pady=2)
-    tk.Button(btn_frame, text="Pause", command=pause).grid(row=0, column=1, padx=2, pady=2)
+    tk.Button(btn_frame, text="Play", command=play).grid(
+        row=0, column=0, padx=2, pady=2
+    )
+    tk.Button(btn_frame, text="Pause", command=pause).grid(
+        row=0, column=1, padx=2, pady=2
+    )
 
-    tk.Button(btn_frame, text="<<1f", command=lambda: step_frames(-1)).grid(row=0, column=2, padx=2, pady=2)
-    tk.Button(btn_frame, text=">>1f", command=lambda: step_frames(+1)).grid(row=0, column=3, padx=2, pady=2)
+    tk.Button(btn_frame, text="<<1f", command=lambda: step_frames(-1)).grid(
+        row=0, column=2, padx=2, pady=2
+    )
+    tk.Button(btn_frame, text=">>1f", command=lambda: step_frames(+1)).grid(
+        row=0, column=3, padx=2, pady=2
+    )
 
-    tk.Button(btn_frame, text="-0.1s", command=lambda: jump_ms(-100)).grid(row=0, column=4, padx=2, pady=2)
-    tk.Button(btn_frame, text="+0.1s", command=lambda: jump_ms(+100)).grid(row=0, column=5, padx=2, pady=2)
+    tk.Button(btn_frame, text="-0.1s", command=lambda: jump_ms(-100)).grid(
+        row=0, column=4, padx=2, pady=2
+    )
+    tk.Button(btn_frame, text="+0.1s", command=lambda: jump_ms(+100)).grid(
+        row=0, column=5, padx=2, pady=2
+    )
 
-    tk.Button(btn_frame, text="-0.5s", command=lambda: jump_ms(-500)).grid(row=0, column=6, padx=2, pady=2)
-    tk.Button(btn_frame, text="+0.5s", command=lambda: jump_ms(+500)).grid(row=0, column=7, padx=2, pady=2)
+    tk.Button(btn_frame, text="-0.5s", command=lambda: jump_ms(-500)).grid(
+        row=0, column=6, padx=2, pady=2
+    )
+    tk.Button(btn_frame, text="+0.5s", command=lambda: jump_ms(+500)).grid(
+        row=0, column=7, padx=2, pady=2
+    )
 
-    tk.Button(btn_frame, text="-1s", command=lambda: jump_ms(-1000)).grid(row=0, column=8, padx=2, pady=2)
-    tk.Button(btn_frame, text="+1s", command=lambda: jump_ms(+1000)).grid(row=0, column=9, padx=2, pady=2)
+    tk.Button(btn_frame, text="-1s", command=lambda: jump_ms(-1000)).grid(
+        row=0, column=8, padx=2, pady=2
+    )
+    tk.Button(btn_frame, text="+1s", command=lambda: jump_ms(+1000)).grid(
+        row=0, column=9, padx=2, pady=2
+    )
 
-    tk.Button(btn_frame, text="Mark (SPACE)", command=mark).grid(row=0, column=10, padx=2, pady=2)
+    tk.Button(btn_frame, text="Mark (SPACE)", command=mark).grid(
+        row=0, column=10, padx=2, pady=2
+    )
 
     # Next / Finish button
     next_label = "Finish" if is_last else "Next video"
-    tk.Button(btn_frame, text=next_label, command=done_this_video).grid(row=0, column=11, padx=2, pady=2)
+    tk.Button(btn_frame, text=next_label, command=done_this_video).grid(
+        row=0, column=11, padx=2, pady=2
+    )
 
     # Optional: Quit-all button if user wants to stop entire batch early
-    tk.Button(btn_frame, text="Quit all", fg="red", command=quit_all).grid(row=0, column=12, padx=2, pady=2)
+    tk.Button(btn_frame, text="Quit all", fg="red", command=quit_all).grid(
+        row=0, column=12, padx=2, pady=2
+    )
 
     # Keyboard shortcuts on this same window
     root.bind("<space>", mark)
@@ -324,7 +368,9 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
             ok2, frame2 = cap.read()
             if ok2:
                 state["last_frame"] = frame2
-                state["next_frame_time"] = now + frame_interval / max(0.1, state["speed"])
+                state["next_frame_time"] = now + frame_interval / max(
+                    0.1, state["speed"]
+                )
             else:
                 state["playing"] = False
 
@@ -337,14 +383,18 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
                 f"speed={state['speed']:.2f}x  marks={len(times)}"
             )
             cv2.putText(
-                disp, hud, (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2
+                disp, hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2
             )
             if times:
                 last_s = times[-1] / 1000.0
                 cv2.putText(
-                    disp, f"last mark: {last_s:.2f}s", (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 255, 200), 2
+                    disp,
+                    f"last mark: {last_s:.2f}s",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (200, 255, 200),
+                    2,
                 )
 
             # scale to fit window max without cropping
@@ -387,17 +437,29 @@ def process_one(video: Path, out_dir: Path, pad_ms: int, init_speed: float, is_l
         out = out_dir / f"{stem}_rep{k:02d}.mp4"
         cut(video, out, s, e)
 
-    print(f"{video.name}: marked {len(times)} bottoms -> {len(reps)} rep clips -> {out_dir}")
+    print(
+        f"{video.name}: marked {len(times)} bottoms -> {len(reps)} rep clips -> {out_dir}"
+    )
     return len(reps), False
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Mark bench rep bottoms and auto-split clips.")
-    ap.add_argument("--video", type=Path, help="Optional path to a single video (skips file picker)")
-    ap.add_argument("--out_dir", type=Path, help="Output directory (omit to choose via dialog)")
-    ap.add_argument("--pad_ms", type=int, default=120, help="Padding before/after each rep")
+    ap = argparse.ArgumentParser(
+        description="Mark bench rep bottoms and auto-split clips."
+    )
+    ap.add_argument(
+        "--video", type=Path, help="Optional path to a single video (skips file picker)"
+    )
+    ap.add_argument(
+        "--out_dir", type=Path, help="Output directory (omit to choose via dialog)"
+    )
+    ap.add_argument(
+        "--pad_ms", type=int, default=120, help="Padding before/after each rep"
+    )
     ap.add_argument("--speed", type=float, default=1.0, help="Initial playback speed")
-    ap.add_argument("--no_multi", action="store_true", help="Picker selects only one file")
+    ap.add_argument(
+        "--no_multi", action="store_true", help="Picker selects only one file"
+    )
     args = ap.parse_args()
 
     # gather videos
@@ -423,7 +485,7 @@ def main():
     abort_all = False
     n = len(videos)
     for idx, v in enumerate(videos):
-        is_last = (idx == n - 1)
+        is_last = idx == n - 1
         clips, abort_all = process_one(v, out_dir, args.pad_ms, args.speed, is_last)
         total_clips += clips
         if abort_all:

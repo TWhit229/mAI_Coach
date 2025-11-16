@@ -52,9 +52,10 @@ except Exception as e:
 
 WIN_NAME = "Pose Tuner"
 
+
 # --- Optional file picker -----------------------------------------------------
 def pick_file_dialog() -> str:
-    """Try to open a native file-dialog. Return selected path or ''. """
+    """Try to open a native file-dialog. Return selected path or ''."""
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -148,8 +149,12 @@ def draw_upper_body(frame_bgr, pts, circle_radius=2, thickness=2):
     rsh_x, rsh_y = to_px(rs, W, H)
 
     # chest point + lines to shoulders
-    cv2.line(frame_bgr, (mx, my), (lsh_x, lsh_y), (255, 255, 255), thickness, cv2.LINE_AA)
-    cv2.line(frame_bgr, (mx, my), (rsh_x, rsh_y), (255, 255, 255), thickness, cv2.LINE_AA)
+    cv2.line(
+        frame_bgr, (mx, my), (lsh_x, lsh_y), (255, 255, 255), thickness, cv2.LINE_AA
+    )
+    cv2.line(
+        frame_bgr, (mx, my), (rsh_x, rsh_y), (255, 255, 255), thickness, cv2.LINE_AA
+    )
     cv2.circle(frame_bgr, (mx, my), circle_radius + 1, (255, 255, 255), -1, cv2.LINE_AA)
 
     # lines for upper body + hands
@@ -256,12 +261,12 @@ def main():
 
     # 0=lite, 1=full, 2=heavy (default full)
     add_tb("model_variant", 2, 1)
-    add_tb("upper_body_only", 1, 1)          # 1 = upper body + hands only
+    add_tb("upper_body_only", 1, 1)  # 1 = upper body + hands only
     add_tb("min_pose_detection_x100", 100, 50)  # 0.50
-    add_tb("min_pose_presence_x100", 100, 70)   # 0.70
-    add_tb("min_tracking_x100", 100, 70)        # 0.70
-    add_tb("output_seg_masks", 1, 0)            # off
-    add_tb("EMA_alpha_x100", 100, 25)           # 0.25
+    add_tb("min_pose_presence_x100", 100, 70)  # 0.70
+    add_tb("min_tracking_x100", 100, 70)  # 0.70
+    add_tb("output_seg_masks", 1, 0)  # off
+    add_tb("EMA_alpha_x100", 100, 25)  # 0.25
     add_tb("circle_radius", 10, 2)
     add_tb("thickness", 10, 2)
 
@@ -372,7 +377,10 @@ def main():
 
                     if upper_only:
                         draw_upper_body(
-                            frame_bgr, pts, circle_radius=circle_radius, thickness=thickness
+                            frame_bgr,
+                            pts,
+                            circle_radius=circle_radius,
+                            thickness=thickness,
                         )
                     else:
                         lmlist = make_norm_landmark_list_from_pts(pts)
@@ -401,9 +409,7 @@ def main():
                 trk = trk_pos / 100.0
                 seg = bool(seg_pos)
                 ema = ema_pos / 100.0
-                model_name = ["lite", "full", "heavy"][
-                    max(0, min(2, model_variant))
-                ]
+                model_name = ["lite", "full", "heavy"][max(0, min(2, model_variant))]
 
                 hud_lines = [
                     f"FPS: {fps_smooth:5.1f}  model={model_name}",
