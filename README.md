@@ -1,6 +1,6 @@
 # mAI_Coach
 
-mAI_Coach is a research prototype that brings real-time motion capture to strength training. The iOS app streams camera frames through MediaPipe pose models to flag issues during a bench press, while the companion desktop tooling helps the team curate labeled video datasets for future models.
+mAI_Coach is a research prototype that brings real-time motion capture to strength training. The iOS app streams camera frames through MediaPipe pose models to flag issues during a bench press, while the companion desktop tooling (a unified PySide6 app) helps the team curate labeled video datasets for future models.
 
 ## Highlights
 - **On-device inference:** SwiftUI app uses MediaPipe Tasks (`pose_landmarker_lite.task`) for low-latency landmark detection without sending video to the cloud.
@@ -31,21 +31,21 @@ mAI_Coach is a research prototype that brings real-time motion capture to streng
 - Additional lift types can be added by extending `CoachView` navigation targets and providing the relevant session views.
 
 ## Developer tool suite (Python)
-All helper scripts live in `Dev_tools/` (see the folder README for details). Quick start:
+All helper scripts now live inside the single-window PySide6 app at `Dev_tools/unified_tool.py`. Quick start:
 
 ```bash
-cd Dev_tools
-python setup_env.py      # creates .venv and installs requirements
-source .venv/bin/activate
-python tool_suite.py     # launches the unified GUI
+# create/refresh the Dev_tools/.venv virtual environment
+./scripts/setup_unified_env.sh
+
+# launch the unified GUI
+./scripts/run_unified_tool.sh
 ```
 
-From the launcher you can open:
-- **Data Labeler (`bench_labeler.py`)** for tagging reps/issues with synchronized video + pose overlays.
-- **Multi-video & single-video tuners** to dial in MediaPipe parameters across clips.
-- **Auto Cut Video** to batch-export rep segments (requires system `ffmpeg`).
+The window exposes the labeler (issue tagging, metadata forms, per-frame annotations), the automatic clipper, and the pose-tuner grid. Configuration lives in `Dev_tools/label_config.json`; edit it from inside the tool or by hand if you need to version-control label changes.
 
-All tools expect the `.task` model files and `label_config.json` to remain beside the scripts; version-control any edits to the label config so the app and tools stay in sync.
+### Archived utilities
+
+Legacy Tkinter scripts (`auto_cut_video.py`, `multi_video_pose_tuner.py`, `pose_tasks_overlay_tuner.py`, etc.) were moved to `Dev_tools/archive/`. Keep them only for historical reference—new workflows should happen in `unified_tool.py`.
 
 ## Documentation
 - `Documentation/Requirements*.docx` captures the functional scope for CS462.

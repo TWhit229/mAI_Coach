@@ -56,6 +56,7 @@ except Exception as e:
 
 WIN_NAME = "Multi Pose Tuner"
 
+
 # --- Optional multi-file picker ----------------------------------------------
 def pick_files_dialog_multi():
     """Try to open a native file-dialog that lets you choose multiple videos."""
@@ -152,8 +153,12 @@ def draw_upper_body(frame_bgr, pts, circle_radius=2, thickness=2):
     rsh_x, rsh_y = to_px(rs, W, H)
 
     # chest point + lines to shoulders
-    cv2.line(frame_bgr, (mx, my), (lsh_x, lsh_y), (255, 255, 255), thickness, cv2.LINE_AA)
-    cv2.line(frame_bgr, (mx, my), (rsh_x, rsh_y), (255, 255, 255), thickness, cv2.LINE_AA)
+    cv2.line(
+        frame_bgr, (mx, my), (lsh_x, lsh_y), (255, 255, 255), thickness, cv2.LINE_AA
+    )
+    cv2.line(
+        frame_bgr, (mx, my), (rsh_x, rsh_y), (255, 255, 255), thickness, cv2.LINE_AA
+    )
     cv2.circle(frame_bgr, (mx, my), circle_radius + 1, (255, 255, 255), -1, cv2.LINE_AA)
 
     # lines for upper body + hands
@@ -256,13 +261,13 @@ def main():
     def add_tb(name, maxval, init=0):
         cv2.createTrackbar(name, WIN_NAME, init, maxval, lambda v: None)
 
-    add_tb("model_variant", 2, 1)           # 0=lite,1=full,2=heavy; default full
-    add_tb("upper_body_only", 1, 1)         # 1 = upper body + hands only
+    add_tb("model_variant", 2, 1)  # 0=lite,1=full,2=heavy; default full
+    add_tb("upper_body_only", 1, 1)  # 1 = upper body + hands only
     add_tb("min_pose_detection_x100", 100, 60)  # 0.60
-    add_tb("min_pose_presence_x100", 100, 50)   # 0.50
-    add_tb("min_tracking_x100", 100, 70)        # 0.70
-    add_tb("output_seg_masks", 1, 0)            # off
-    add_tb("EMA_alpha_x100", 100, 25)           # 0.25
+    add_tb("min_pose_presence_x100", 100, 50)  # 0.50
+    add_tb("min_tracking_x100", 100, 70)  # 0.70
+    add_tb("output_seg_masks", 1, 0)  # off
+    add_tb("EMA_alpha_x100", 100, 25)  # 0.25
     add_tb("circle_radius", 10, 2)
     add_tb("thickness", 10, 2)
 
@@ -357,11 +362,19 @@ def main():
                     # label as finished
                     label = f"{i+1}: (done)"
                     cv2.putText(
-                        cell, label, (10, CELL_H // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA
+                        cell,
+                        label,
+                        (10, CELL_H // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (200, 200, 200),
+                        2,
+                        cv2.LINE_AA,
                     )
                 else:
-                    cell = cv2.resize(src, (CELL_W, CELL_H), interpolation=cv2.INTER_LINEAR)
+                    cell = cv2.resize(
+                        src, (CELL_W, CELL_H), interpolation=cv2.INTER_LINEAR
+                    )
                     t = tasks[i]
                     if t is not None:
                         mp_img = mp_image_from_bgr(cell)
@@ -397,7 +410,10 @@ def main():
 
                             if upper_only:
                                 draw_upper_body(
-                                    cell, pts, circle_radius=circle_radius, thickness=thickness
+                                    cell,
+                                    pts,
+                                    circle_radius=circle_radius,
+                                    thickness=thickness,
                                 )
                             else:
                                 lmlist = make_norm_landmark_list_from_pts(pts)
@@ -412,12 +428,24 @@ def main():
                     # add small label (index + file name) at top left of the cell
                     label = f"{i+1}: {names[i][:20]}"
                     cv2.putText(
-                        cell, label, (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA
+                        cell,
+                        label,
+                        (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 0, 0),
+                        3,
+                        cv2.LINE_AA,
                     )
                     cv2.putText(
-                        cell, label, (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA
+                        cell,
+                        label,
+                        (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
                     )
 
                 # place cell into mosaic
@@ -425,7 +453,7 @@ def main():
                 c = i % cols
                 y0 = r * CELL_H
                 x0 = c * CELL_W
-                mosaic[y0:y0 + CELL_H, x0:x0 + CELL_W] = cell
+                mosaic[y0 : y0 + CELL_H, x0 : x0 + CELL_W] = cell
 
             # FPS + HUD
             t_now = time.time()
@@ -433,7 +461,9 @@ def main():
             t_last = t_now
             if dt > 0:
                 fps_curr = 1.0 / dt
-                fps_smooth = 0.9 * fps_smooth + 0.1 * fps_curr if fps_smooth > 0 else fps_curr
+                fps_smooth = (
+                    0.9 * fps_smooth + 0.1 * fps_curr if fps_smooth > 0 else fps_curr
+                )
 
             det = det_pos / 100.0
             prs = pres_pos / 100.0

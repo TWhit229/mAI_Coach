@@ -189,11 +189,20 @@ class ToolSuiteApp:
 
     def launch_tool(self, script_path: Path):
         script_path = Path(script_path)
-        if not script_path.exists():
-            messagebox.showerror("Missing script", f"Cannot find {script_path}")
+        resolved_path = script_path.resolve()
+        if not resolved_path.exists():
+            messagebox.showerror("Missing script", f"Cannot find {resolved_path}")
             return
         try:
-            subprocess.Popen([sys.executable, str(script_path)])
+            resolved_path.relative_to(ROOT_DIR)
+        except ValueError:
+            messagebox.showerror(
+                "Security error",
+                f"Refusing to launch script outside of {ROOT_DIR}:\n{resolved_path}",
+            )
+            return
+        try:
+            subprocess.Popen([sys.executable, str(resolved_path)])
         except Exception as exc:
             messagebox.showerror("Launch failed", str(exc))
 
