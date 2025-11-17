@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -12,7 +13,12 @@ from typing import Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
+import PySide6
 from PySide6 import QtCore, QtGui, QtWidgets
+
+# Ensure Qt can locate the platform plugins (notably "cocoa" on macOS)
+_PLUGIN_DIR = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
+os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(_PLUGIN_DIR))
 
 from label_config import ensure_config_file, load_label_config, save_label_config
 
