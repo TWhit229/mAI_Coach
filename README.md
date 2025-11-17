@@ -4,7 +4,7 @@ mAI_Coach is a research prototype that brings real-time motion capture to streng
 
 ## Highlights
 - **On-device inference:** SwiftUI app uses MediaPipe Tasks (`pose_landmarker_lite.task`) for low-latency landmark detection without sending video to the cloud.
-- **Coach session overlay:** Bench session screen mirrors the front/back camera, draws pose landmarks live, and exposes quick camera toggles so athletes can self-check form.
+- **Coach session overlay:** Bench session screen mirrors the front/back camera and draws pose landmarks live so athletes can self-check form.
 - **Tooling for coaches & annotators:** Python/PySide6 utilities speed up video trimming, labeling, and overlay tuning to keep datasets consistent with the in-app experience.
 
 ## Repository layout

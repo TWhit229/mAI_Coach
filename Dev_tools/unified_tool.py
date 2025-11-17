@@ -61,7 +61,7 @@ def draw_upper_body_overlay(
         return int(x * W), int(y * H)
 
     UPPER_IDS = [11, 12, 13, 14, 15, 16, 23, 24]
-    UPPER_LINES = [
+    UPPER_LINES: List[tuple[int, int]] = [
         (11, 13),
         (13, 15),
         (12, 14),
@@ -86,10 +86,10 @@ def draw_upper_body_overlay(
 
     if not allowed_parts:
         allowed_points = set(UPPER_IDS)
-        allowed_lines = list(UPPER_LINES)
+        allowed_lines: List[tuple[int, int]] = list(UPPER_LINES)
     else:
         allowed_points = set()
-        allowed_lines: List[tuple[int, int]] = []
+        allowed_lines = []
         expanded = set(allowed_parts)
         if "full_body" in expanded:
             allowed_points = set(UPPER_IDS)
@@ -694,7 +694,7 @@ class HomePage(QtWidgets.QWidget):
         super().__init__()
         layout = QtWidgets.QVBoxLayout(self)
         label = QtWidgets.QLabel(
-            "Welcome to the MAI Coach tool suite.\nChoose an option to get started.",
+            "Welcome to the mAI Coach tool suite.\nChoose an option to get started.",
             alignment=QtCore.Qt.AlignCenter,
         )
         label.setWordWrap(True)
@@ -920,8 +920,6 @@ class LabelerView(QtWidgets.QWidget):
         self.next_btn.clicked.connect(lambda: self._load_relative(+1, save=True))
         nav.addWidget(self.next_btn)
         self._update_body_part_preview()
-        self._update_nav_buttons()
-        self._update_nav_buttons()
         self._update_nav_buttons()
 
     def refresh_label_options(self):
@@ -1645,7 +1643,7 @@ class VideoCutView(QtWidgets.QWidget):
             return
         path = self.videos[self.current_index]
         clips = self.cuts.get(path, [])
-        if 0 <= row < len(clips):
+        if row < len(clips):
             clips.pop(row)
             self._refresh_cut_list()
 
@@ -1665,6 +1663,7 @@ class VideoCutView(QtWidgets.QWidget):
         if not out_dir:
             return
         out_dir = Path(out_dir)
+        errors = False
         pad = self.pad_spin.value()
         for video in self.videos:
             clips = self.cuts.get(video, [])
@@ -1675,28 +1674,51 @@ class VideoCutView(QtWidgets.QWidget):
                 e = end + pad
                 stem = video.stem
                 out_path = out_dir / f"{stem}_clip{idx:02d}.mp4"
-                self._run_ffmpeg(video, out_path, s, e)
-        QtWidgets.QMessageBox.information(self, "Done", "Export completed.")
+                if not self._run_ffmpeg(video, out_path, s, e):
+                    errors = True
+        if errors:
+            self.status_label.setText("Export finished with FFmpeg errors.")
+        else:
+            QtWidgets.QMessageBox.information(self, "Done", "Export completed.")
 
-    def _run_ffmpeg(self, src: Path, dst: Path, start_ms: int, end_ms: int):
+    def _run_ffmpeg(self, src: Path, dst: Path, start_ms: int, end_ms: int) -> bool:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                f"{start_ms / 1000:.3f}",
-                "-to",
-                f"{end_ms / 1000:.3f}",
-                "-i",
-                str(src),
-                "-c",
-                "copy",
-                str(dst),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    f"{start_ms / 1000:.3f}",
+                    "-to",
+                    f"{end_ms / 1000:.3f}",
+                    "-i",
+                    str(src),
+                    "-c",
+                    "copy",
+                    str(dst),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "FFmpeg not found",
+                "FFmpeg is not installed or not available on PATH. "
+                "Install ffmpeg and try exporting again.",
+            )
+            return False
+
+        if result.returncode != 0:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "FFmpeg error",
+                f"FFmpeg failed to export clip from {src.name}. "
+                "Verify the source video and FFmpeg installation.",
+            )
+            return False
+        return True
 
     def _current_time_ms(self) -> float:
         if not self.frames:
@@ -1965,7 +1987,7 @@ class PoseTunerView(QtWidgets.QWidget):
     def _pick_videos(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "Select up to 6 videos",
+            "Select up to 4 videos",
             str(Path.home()),
             "Videos (*.mp4 *.mov *.mkv *.avi)",
         )
@@ -2083,7 +2105,9 @@ class PoseTunerView(QtWidgets.QWidget):
                 draw_upper_body_overlay(frame, frec["landmarks"], allowed)
         else:
             if allowed and "full_body" not in allowed:
-                # Dim frame if limiting body parts without pose
+                # Dim the frame if a subset of body parts was requested but no pose
+                # landmarks exist for this frame. This gives users a visual hint that
+                # the overlay cannot be drawn for the selected regions yet.
                 frame[:] = frame * 0.8
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -2185,7 +2209,7 @@ class PoseTunerView(QtWidgets.QWidget):
 class UnifiedToolWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MAI Coach Tools")
+        self.setWindowTitle("mAI Coach Tools")
         self.resize(1600, 900)
 
         self.stack = QtWidgets.QStackedWidget()

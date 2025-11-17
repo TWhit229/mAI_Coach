@@ -2,7 +2,7 @@
 """
 Convert labeled bench JSON reps into normalized numpy arrays for model training.
 
-- Input: one or more JSON files produced by bench_labeler.py
+- Input: one or more JSON files exported by the unified labeling tool
 - Output: one .npz per input, with:
     features: (T, D) float32   # normalized upper-body coordinates per frame
     mask:     (T,)  float32    # 1 if pose is present and valid, else 0
@@ -11,6 +11,7 @@ Convert labeled bench JSON reps into normalized numpy arrays for model training.
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 
@@ -23,6 +24,14 @@ except Exception as e:
     raise SystemExit(
         f"Failed to import tkinter: {e}\nYour Python may not have Tk support."
     )
+
+try:
+    from label_config import load_label_config
+except ModuleNotFoundError:
+    dev_tools_dir = Path(__file__).resolve().parents[1]
+    sys.path.append(str(dev_tools_dir))
+    from label_config import load_label_config
+
 
 # -------------------- Config: which landmarks we keep -------------------------
 
@@ -59,43 +68,16 @@ BENCH_LANDMARK_IDS = [
     R_HIP,
 ]
 
-# Must match the ISSUE_OPTIONS list in bench_labeler.py
-ISSUE_OPTIONS = [
-    "01_angle_issues",
-    "02_tracking_unreliable",
-    "03_no_major_issues",
-    "04_hands_too_wide",
-    "05_hands_too_narrow",
-    "06_grip_uneven",
-    "07_body_placement_too_forward",
-    "08_body_placement_too_backward",
-    "09_bar_path_too_forward",
-    "10_bar_path_too_backward",
-    "11_elbows_flared",
-    "12_elbows_flared_bottom",
-    "13_elbows_flared_lockout",
-    "14_elbows_tucked",
-    "15_elbows_tucked_excessive",
-    "16_pause_too_long",
-    "17_pause_too_short",
-    "18_no_pause_on_chest",
-    "19_bar_depth_insufficient",
-    "20_bar_depth_excessive",
-    "21_barbell_tilt_right",
-    "22_barbell_tilt_left",
-    "23_uneven_lockout",
-    "24_hips_off_bench",
-    "25_descent_too_fast",
-    "26_bounce_off_chest",
-    "27_incomplete_lockout",
-    "28_wrists_tilted_forward",
-    "29_wrists_tilted_backward",
-    "30_right_elbow_in",
-    "31_left_elbow_in",
-    "32_right_elbow_out",
-    "33_left_elbow_out",
-]
 
+def _load_issue_options() -> List[str]:
+    cfg = load_label_config()
+    issues = cfg.get("issues") or []
+    if not issues:
+        raise ValueError("label_config.json defines no issue options.")
+    return issues
+
+
+ISSUE_OPTIONS = _load_issue_options()
 ISSUE_INDEX = {name: i for i, name in enumerate(ISSUE_OPTIONS)}
 
 
@@ -104,7 +86,7 @@ ISSUE_INDEX = {name: i for i, name in enumerate(ISSUE_OPTIONS)}
 
 def extract_frame_features(frame: Dict) -> Tuple[np.ndarray, float]:
     """
-    Convert one frame record from bench_labeler JSON into a normalized feature vector.
+    Convert one frame record from a labeled JSON export into a normalized feature vector.
 
     Normalization:
     - If pose is missing: return zeros, mask=0.
@@ -190,7 +172,7 @@ def build_label_matrix(num_frames: int, issue_events: List[Dict]) -> np.ndarray:
 
 
 def process_json_file(path: Path) -> dict:
-    """Load one bench_labeler JSON and convert to arrays."""
+    """Load one labeled JSON (from the unified tool) and convert to arrays."""
     with path.open("r") as f:
         data = json.load(f)
 
