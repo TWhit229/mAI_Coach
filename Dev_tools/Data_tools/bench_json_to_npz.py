@@ -21,8 +21,7 @@ try:
     from tkinter import filedialog, messagebox
 except Exception as e:
     raise SystemExit(
-        f"Failed to import tkinter: {e}\n"
-        "Your Python may not have Tk support."
+        f"Failed to import tkinter: {e}\nYour Python may not have Tk support."
     )
 
 # -------------------- Config: which landmarks we keep -------------------------
@@ -101,6 +100,7 @@ ISSUE_INDEX = {name: i for i, name in enumerate(ISSUE_OPTIONS)}
 
 
 # -------------------- Per-frame feature extraction ---------------------------
+
 
 def extract_frame_features(frame: Dict) -> Tuple[np.ndarray, float]:
     """
@@ -188,6 +188,7 @@ def build_label_matrix(num_frames: int, issue_events: List[Dict]) -> np.ndarray:
 
 # -------------------- Per-file processing ------------------------------------
 
+
 def process_json_file(path: Path) -> dict:
     """Load one bench_labeler JSON and convert to arrays."""
     with path.open("r") as f:
@@ -221,6 +222,7 @@ def process_json_file(path: Path) -> dict:
 
 
 # -------------------- Main (GUI file pickers) --------------------------------
+
 
 def main():
     # 1) Pick JSON input files

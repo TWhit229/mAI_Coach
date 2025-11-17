@@ -916,11 +916,7 @@ class LabelerView(QtWidgets.QWidget):
         total = len(self.session.video_paths)
         if total == 0 or self.session.current_index < 0:
             return
-        if (
-            delta > 0
-            and self._auto_finish
-            and self.session.current_index >= total - 1
-        ):
+        if delta > 0 and self._auto_finish and self.session.current_index >= total - 1:
             if self._home_cb:
                 self._home_cb()
             return
@@ -1264,7 +1260,6 @@ class VideoCutView(QtWidgets.QWidget):
         if self._home_cb:
             self._home_cb()
 
-
     def load_cutting_inputs(self, videos: List[Path]):
         if videos:
             self.videos = videos
@@ -1378,7 +1373,7 @@ class VideoCutView(QtWidgets.QWidget):
         clips = self.cuts.get(path, [])
         for idx, (start, end) in enumerate(clips, 1):
             self.cut_list.addItem(
-                f"{idx}. {start/1000:.2f}s -> {end/1000:.2f}s (len {(end-start)/1000:.2f}s)"
+                f"{idx}. {start / 1000:.2f}s -> {end / 1000:.2f}s (len {(end - start) / 1000:.2f}s)"
             )
 
     def _remove_selected_cut(self):
@@ -1429,9 +1424,9 @@ class VideoCutView(QtWidgets.QWidget):
                 "ffmpeg",
                 "-y",
                 "-ss",
-                f"{start_ms/1000:.3f}",
+                f"{start_ms / 1000:.3f}",
                 "-to",
-                f"{end_ms/1000:.3f}",
+                f"{end_ms / 1000:.3f}",
                 "-i",
                 str(src),
                 "-c",
@@ -1514,8 +1509,6 @@ class VideoCutView(QtWidgets.QWidget):
         self.play_timer.setInterval(interval)
 
 
-
-
 class PoseTunerView(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -1556,7 +1549,9 @@ class PoseTunerView(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout()
         control_panel.addLayout(form)
 
-        def add_setting_row(label_text: str, widget: QtWidgets.QWidget, description: str):
+        def add_setting_row(
+            label_text: str, widget: QtWidgets.QWidget, description: str
+        ):
             form.addRow(label_text, widget)
             hint = QtWidgets.QLabel(description)
             hint.setStyleSheet("color: #888; font-size: 11px;")
@@ -1567,32 +1562,62 @@ class PoseTunerView(QtWidgets.QWidget):
         self.movement_cb.setEditable(True)
         self.movement_cb.addItems(self.movements)
         self.movement_cb.currentTextChanged.connect(self._load_settings_for_movement)
-        add_setting_row("Movement", self.movement_cb, "Pick a movement preset to load or edit settings.")
+        add_setting_row(
+            "Movement",
+            self.movement_cb,
+            "Pick a movement preset to load or edit settings.",
+        )
 
         self.det_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.1, maximum=1.0, value=0.5, singleStep=0.05
         )
-        self.det_spin.setToolTip("Detection confidence threshold (higher = fewer detections).")
+        self.det_spin.setToolTip(
+            "Detection confidence threshold (higher = fewer detections)."
+        )
         self.prs_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.1, maximum=1.0, value=0.7, singleStep=0.05
         )
-        self.prs_spin.setToolTip("Pose score threshold used when filtering landmark quality.")
+        self.prs_spin.setToolTip(
+            "Pose score threshold used when filtering landmark quality."
+        )
         self.trk_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.1, maximum=1.0, value=0.7, singleStep=0.05
         )
-        self.trk_spin.setToolTip("Tracker confidence threshold before dropping a track.")
+        self.trk_spin.setToolTip(
+            "Tracker confidence threshold before dropping a track."
+        )
         self.ema_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.0, maximum=1.0, value=0.25, singleStep=0.05
         )
-        self.ema_spin.setToolTip("Exponential moving average amount for smoothing landmarks.")
+        self.ema_spin.setToolTip(
+            "Exponential moving average amount for smoothing landmarks."
+        )
         self.seg_check = QtWidgets.QCheckBox("Enable segmentation masks")
         self.seg_check.setToolTip("Overlay segmentation masks when available.")
-        add_setting_row("det", self.det_spin, "Detection confidence threshold (higher removes weaker detections).")
-        add_setting_row("prs", self.prs_spin, "Pose score threshold applied when keeping landmark results.")
-        add_setting_row("trk", self.trk_spin, "Tracking score threshold before the subject is re-detected.")
-        add_setting_row("ema", self.ema_spin, "Smoothing factor for the exponential moving average applied to pose data.")
+        add_setting_row(
+            "det",
+            self.det_spin,
+            "Detection confidence threshold (higher removes weaker detections).",
+        )
+        add_setting_row(
+            "prs",
+            self.prs_spin,
+            "Pose score threshold applied when keeping landmark results.",
+        )
+        add_setting_row(
+            "trk",
+            self.trk_spin,
+            "Tracking score threshold before the subject is re-detected.",
+        )
+        add_setting_row(
+            "ema",
+            self.ema_spin,
+            "Smoothing factor for the exponential moving average applied to pose data.",
+        )
         form.addRow(self.seg_check)
-        seg_hint = QtWidgets.QLabel("Overlay segmentation masks for the model (slightly slower).")
+        seg_hint = QtWidgets.QLabel(
+            "Overlay segmentation masks for the model (slightly slower)."
+        )
         seg_hint.setStyleSheet("color: #888; font-size: 11px;")
         seg_hint.setWordWrap(True)
         form.addRow("", seg_hint)
@@ -1608,7 +1633,9 @@ class PoseTunerView(QtWidgets.QWidget):
             self.body_part_checks.append(chk)
             row, col = divmod(i, 2)
             body_layout.addWidget(chk, row, col)
-        body_hint = QtWidgets.QLabel("Select which body segments should remain highlighted on the overlays.")
+        body_hint = QtWidgets.QLabel(
+            "Select which body segments should remain highlighted on the overlays."
+        )
         body_hint.setStyleSheet("color: #888; font-size: 11px;")
         body_hint.setWordWrap(True)
         control_panel.addWidget(body_hint)
