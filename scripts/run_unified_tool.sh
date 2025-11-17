@@ -10,4 +10,15 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 source "$VENV_DIR/bin/activate"
+
+# Ensure Qt can find its platform plugins (notably "cocoa" on macOS)
+QT_PLUGIN_PATH="$(python - <<'PY'
+from PySide6.QtCore import QLibraryInfo, LibraryPath
+print(QLibraryInfo.path(LibraryPath.PluginsPath))
+PY
+)"
+if [ -n "$QT_PLUGIN_PATH" ]; then
+    export QT_QPA_PLATFORM_PLUGIN_PATH="$QT_PLUGIN_PATH"
+fi
+
 python "$REPO_ROOT/Dev_tools/unified_tool.py"
