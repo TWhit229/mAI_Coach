@@ -12,18 +12,13 @@ fi
 source "$VENV_DIR/bin/activate"
 
 # Ensure Qt can find its platform plugins (notably "cocoa" on macOS)
+# Determine the plugin directory directly from the PySide6 install
 QT_PLUGIN_PATH="$(python - <<'PY'
-from PySide6.QtCore import QLibraryInfo
-try:
-    from PySide6.QtCore import LibraryPath
-except ImportError:
-    LibraryPath = None
+from pathlib import Path
+import PySide6
 
-if LibraryPath is None:
-    path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
-else:
-    path = QLibraryInfo.path(LibraryPath.PluginsPath)
-print(path)
+plugin_path = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins"
+print(plugin_path)
 PY
 )"
 if [ -n "$QT_PLUGIN_PATH" ]; then
