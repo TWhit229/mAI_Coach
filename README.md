@@ -5,7 +5,7 @@ mAI_Coach is a research prototype that brings real-time motion capture to streng
 ## Highlights
 - **On-device inference:** SwiftUI app uses MediaPipe Tasks (`pose_landmarker_lite.task`) for low-latency landmark detection without sending video to the cloud.
 - **Coach session overlay:** Bench session screen mirrors the front/back camera, draws pose landmarks live, and exposes quick camera toggles so athletes can self-check form.
-- **Tooling for coaches & annotators:** Python/Tkinter utilities speed up video trimming, labeling, and overlay tuning to keep datasets consistent with the in-app experience.
+- **Tooling for coaches & annotators:** Python/PySide6 utilities speed up video trimming, labeling, and overlay tuning to keep datasets consistent with the in-app experience.
 
 ## Repository layout
 | Path | Purpose |
@@ -45,7 +45,7 @@ The window exposes the labeler (issue tagging, metadata forms, per-frame annotat
 
 ### Archived utilities
 
-Legacy Tkinter scripts (`auto_cut_video.py`, `multi_video_pose_tuner.py`, `pose_tasks_overlay_tuner.py`, etc.) were moved to `Dev_tools/archive/`. Keep them only for historical reference—new workflows should happen in `unified_tool.py`.
+Legacy Tkinter scripts (`auto_cut_video.py`, `multi_video_pose_tuner.py`, `pose_tasks_overlay_tuner.py`, etc.) were removed from the active workflow. If you need to reference them, check the git history prior to the unified tool rollout.
 
 ## Documentation
 - `Documentation/Requirements*.docx` captures the functional scope for CS462.

@@ -80,7 +80,7 @@ def main():
     install_requirements()
     activation_hint()
     print("\n[setup] Done. Launch the tool suite with:")
-    print("    python tool_suite.py")
+    print("    python unified_tool.py")
 
 
 if __name__ == "__main__":

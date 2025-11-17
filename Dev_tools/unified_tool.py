@@ -438,12 +438,6 @@ class AdminPanel(QtWidgets.QWidget):
     def _go_home(self):
         if self._home_cb:
             self._home_cb()
-        if self._inputs_locked:
-            self._inputs_locked = False
-            self._auto_finish = False
-            self.load_btn.setEnabled(True)
-            self.dataset_btn.setEnabled(True)
-        self._update_nav_buttons()
 
     def _load_from_file(self):
         cfg = load_label_config()
@@ -887,7 +881,6 @@ class LabelerView(QtWidgets.QWidget):
         else:
             self._update_body_part_preview()
             self._update_nav_buttons()
-            self._update_nav_buttons()
 
     def set_home_callback(self, cb: Callable[[], None]):
         self._home_cb = cb
@@ -961,16 +954,6 @@ class LabelerView(QtWidgets.QWidget):
         for evt in self.session.current_dataset.get("issue_events", []):
             txt = f"frame={evt.get('frame_index', '?')} time={evt.get('time_ms', '?')}ms  {evt.get('issue')}"
             self.issue_events.addItem(txt)
-
-    def _update_nav_buttons(self):
-        total = len(self.session.video_paths)
-        idx = self.session.current_index
-        has_video = total > 0 and idx >= 0
-        finish = self._auto_finish and has_video and idx >= total - 1
-        self.prev_btn.setEnabled(has_video and idx > 0)
-        self.save_btn.setEnabled(has_video)
-        self.next_btn.setEnabled(has_video)
-        self.next_btn.setText("Save & Finish" if finish else "Save + Next")
 
     def _update_nav_buttons(self):
         total = len(self.session.video_paths)
@@ -1144,7 +1127,6 @@ class VideoCutView(QtWidgets.QWidget):
         self.play_timer = QtCore.QTimer(self)
         self.play_timer.timeout.connect(self._advance_frame)
         self.play_timer.start(30)
-        self.play_timer.start(30)
         self.pending_start_ms: Optional[int] = None
         self.cuts: Dict[Path, List[tuple[int, int]]] = {}
         self.output_dir: Optional[Path] = None
@@ -1267,11 +1249,6 @@ class VideoCutView(QtWidgets.QWidget):
             self._load_video(0)
 
     def _pick_videos(self):
-        if self._inputs_locked:
-            self._inputs_locked = False
-            self._auto_finish = False
-            self.load_btn.setEnabled(True)
-            self.dataset_btn.setEnabled(True)
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Select video files",
@@ -1713,10 +1690,6 @@ class PoseTunerView(QtWidgets.QWidget):
         self._load_videos([Path(f) for f in files[:4]])
 
     def _pick_dataset_dir(self):
-        if self._inputs_locked:
-            self._inputs_locked = False
-            self.load_btn.setEnabled(True)
-        self.dataset_btn.setEnabled(True)
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select dataset folder", str(Path.home())
         )
