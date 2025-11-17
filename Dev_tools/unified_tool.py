@@ -16,6 +16,8 @@ import numpy as np
 import PySide6
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from label_config import ensure_config_file, load_label_config, save_label_config
+
 try:
     import mediapipe as mp
     from mediapipe.tasks.python.core.base_options import BaseOptions
@@ -34,8 +36,6 @@ except Exception:
 # Ensure Qt can locate the platform plugins (notably "cocoa" on macOS)
 _PLUGIN_DIR = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
 os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(_PLUGIN_DIR))
-
-from label_config import ensure_config_file, load_label_config, save_label_config
 
 
 # --- Shared helpers copied from the legacy Tk labeler -----------------------
