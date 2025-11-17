@@ -17,7 +17,7 @@ QT_PLUGIN_PATH="$(python - <<'PY'
 from pathlib import Path
 import PySide6
 
-plugin_path = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins"
+plugin_path = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
 print(plugin_path)
 PY
 )"
