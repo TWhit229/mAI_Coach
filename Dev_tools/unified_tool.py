@@ -16,6 +16,21 @@ import numpy as np
 import PySide6
 from PySide6 import QtCore, QtGui, QtWidgets
 
+try:
+    import mediapipe as mp
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+    from mediapipe.tasks.python.vision import (
+        PoseLandmarker,
+        PoseLandmarkerOptions,
+        RunningMode,
+    )
+
+    _HAS_MEDIAPIPE = True
+except Exception:
+    mp = None
+    PoseLandmarker = PoseLandmarkerOptions = RunningMode = BaseOptions = None
+    _HAS_MEDIAPIPE = False
+
 # Ensure Qt can locate the platform plugins (notably "cocoa" on macOS)
 _PLUGIN_DIR = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
 os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(_PLUGIN_DIR))
@@ -138,6 +153,113 @@ BODY_PART_OPTIONS = [
     "full_body",
 ]
 BENCH_DEFAULT_PARTS = ["hands", "forearms", "upper_arms", "shoulders"]
+
+POSE_MODEL_PATHS = {
+    variant: Path(__file__).resolve().parent / f"pose_landmarker_{variant}.task"
+    for variant in MODEL_VARIANTS
+}
+
+
+def _pose_model_path(variant: str) -> Path:
+    key = (variant or "full").lower()
+    path = POSE_MODEL_PATHS.get(key) or POSE_MODEL_PATHS.get("full")
+    if not path or not path.exists():
+        raise FileNotFoundError(
+            f"Missing pose model for variant '{variant}'. Expected {path}."
+        )
+    return path
+
+
+def _mp_image_from_bgr(frame_bgr: np.ndarray):
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    return mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+
+
+def run_pose_landmarks_on_frames(
+    frames: List[np.ndarray],
+    fps: float,
+    settings: Dict,
+    model_path: Path,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+) -> List[Dict]:
+    """Run MediaPipe pose tracking over in-memory frames."""
+    if not _HAS_MEDIAPIPE:
+        raise RuntimeError("mediapipe is not available in this environment.")
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(model_path)
+    if not frames:
+        return []
+
+    options = PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(model_path)),
+        running_mode=RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=float(settings.get("det", 0.5)),
+        min_pose_presence_confidence=float(settings.get("prs", 0.7)),
+        min_tracking_confidence=float(settings.get("trk", 0.7)),
+        output_segmentation_masks=bool(settings.get("seg", False)),
+    )
+    landmarker = PoseLandmarker.create_from_options(options)
+    fps_val = fps if fps and fps > 0 else 30.0
+    ema_alpha = float(settings.get("ema", 0.0) or 0.0)
+    prev_smoothed: Optional[np.ndarray] = None
+    total = len(frames)
+    results: List[Dict] = []
+
+    try:
+        for idx, frame_bgr in enumerate(frames):
+            mp_image = _mp_image_from_bgr(frame_bgr)
+            time_ms = int(round(idx * 1000.0 / fps_val))
+            result = landmarker.detect_for_video(mp_image, time_ms)
+            if result.pose_landmarks:
+                pts = np.array(
+                    [
+                        [
+                            lm.x,
+                            lm.y,
+                            lm.z,
+                            getattr(lm, "presence", getattr(lm, "visibility", 1.0)),
+                        ]
+                        for lm in result.pose_landmarks[0]
+                    ],
+                    dtype=np.float32,
+                )
+                if ema_alpha > 0.0:
+                    pts = lowpass_ema(prev_smoothed, pts, ema_alpha)
+                    prev_smoothed = pts
+                else:
+                    prev_smoothed = None
+                landmarks = [
+                    {
+                        "x": float(p[0]),
+                        "y": float(p[1]),
+                        "z": float(p[2]),
+                        "presence": float(p[3]),
+                    }
+                    for p in pts
+                ]
+                frame_rec = {
+                    "frame_index": idx,
+                    "time_ms": time_ms,
+                    "pose_present": True,
+                    "landmarks": landmarks,
+                }
+            else:
+                prev_smoothed = None
+                frame_rec = {
+                    "frame_index": idx,
+                    "time_ms": time_ms,
+                    "pose_present": False,
+                    "landmarks": None,
+                }
+            results.append(frame_rec)
+            if progress_cb and not progress_cb(idx + 1, total):
+                raise RuntimeError("Pose tracking canceled")
+    finally:
+        landmarker.close()
+
+    return results
 
 
 def default_movement_settings(name: str = "") -> Dict:
@@ -650,6 +772,7 @@ class LabelerView(QtWidgets.QWidget):
         self.playing = False
         self.playback_speed = 1.0
         self._speed_residual = 0.0
+        self._pose_job_active = False
 
         self._build_ui()
         self._update_timer_interval()
@@ -712,6 +835,16 @@ class LabelerView(QtWidgets.QWidget):
         self.scrubber.sliderPressed.connect(self._pause_for_scrub)
         self.scrubber.valueChanged.connect(self._scrubbed)
         left.addWidget(self.scrubber)
+
+        self.pose_refresh_btn = QtWidgets.QPushButton("Re-run Pose Tracker")
+        self.pose_refresh_btn.setToolTip(
+            "Generate or refresh pose overlays for the current video."
+        )
+        self.pose_refresh_btn.setEnabled(False)
+        self.pose_refresh_btn.clicked.connect(
+            lambda: self._ensure_pose_data(force=True)
+        )
+        left.addWidget(self.pose_refresh_btn)
 
         # right: form
         right = QtWidgets.QVBoxLayout()
@@ -831,11 +964,30 @@ class LabelerView(QtWidgets.QWidget):
             self.session.current_dataset["movement"] = name
         self._update_body_part_preview()
 
-    def _update_body_part_preview(self):
-        movement = self.movement_cb.currentText().strip()
-        settings = self.movement_settings.get(movement)
+    def _resolve_movement_settings(self, movement: str) -> Optional[Dict]:
+        if not movement:
+            return None
+        movement = movement.strip()
+        if not movement:
+            return None
+        direct = self.movement_settings.get(movement)
+        if direct:
+            return direct
+        lower = movement.lower()
+        for key, value in self.movement_settings.items():
+            if key.lower() == lower:
+                return value
+        return None
+
+    def _movement_settings_for(self, movement: str) -> Dict:
+        settings = self._resolve_movement_settings(movement)
         if not settings:
             settings = default_movement_settings(movement)
+        return settings
+
+    def _update_body_part_preview(self):
+        movement = self.movement_cb.currentText().strip()
+        settings = self._movement_settings_for(movement)
         self.current_body_parts = settings.get("body_parts") or BODY_PART_OPTIONS.copy()
 
     def _add_btn(self, layout: QtWidgets.QHBoxLayout, text: str, slot):
@@ -928,6 +1080,9 @@ class LabelerView(QtWidgets.QWidget):
     def _on_dataset_loaded(self):
         self._update_form_from_dataset()
         self._render_frame(0)
+        self.pose_refresh_btn.setEnabled(True)
+        if not self._has_pose_overlay():
+            self._ensure_pose_data(force=False)
 
     def _update_form_from_dataset(self):
         d = self.session.current_dataset or {}
@@ -960,6 +1115,14 @@ class LabelerView(QtWidgets.QWidget):
         for evt in self.session.current_dataset.get("issue_events", []):
             txt = f"frame={evt.get('frame_index', '?')} time={evt.get('time_ms', '?')}ms  {evt.get('issue')}"
             self.issue_events.addItem(txt)
+
+    def _has_pose_overlay(self) -> bool:
+        dataset = self.session.current_dataset or {}
+        frames = dataset.get("frames") or []
+        for rec in frames:
+            if rec and rec.get("pose_present") and rec.get("landmarks"):
+                return True
+        return False
 
     def _update_nav_buttons(self):
         total = len(self.session.video_paths)
@@ -1116,6 +1279,121 @@ class LabelerView(QtWidgets.QWidget):
         dataset["issues"] = selected
         self.session.save_current_dataset()
         QtWidgets.QMessageBox.information(self, "Saved", "Dataset JSON saved.")
+
+    def _ensure_pose_data(self, force: bool = False):
+        if self._pose_job_active:
+            return
+        if not self.session.current_dataset or not self.session.frames_bgr:
+            return
+        if not force and self._has_pose_overlay():
+            return
+        if not _HAS_MEDIAPIPE:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Pose overlay unavailable",
+                "mediapipe is not installed. Run scripts/setup_unified_env.sh first.",
+            )
+            return
+
+        movement = (
+            self.session.current_dataset.get("movement")
+            or self.movement_cb.currentText()
+        )
+        settings = self._movement_settings_for(movement)
+        try:
+            model_path = _pose_model_path(settings.get("model", "full"))
+        except FileNotFoundError as exc:
+            QtWidgets.QMessageBox.critical(self, "Pose tracker", str(exc))
+            return
+
+        if not force:
+            prompt = (
+                "No pose overlay data was found for this video.\n"
+                "Run the pose tracker now to enable overlays?"
+            )
+        else:
+            prompt = (
+                "Re-run the pose tracker for this video?\n"
+                "Existing pose results will be replaced."
+            )
+        buttons = QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        default = QtWidgets.QMessageBox.Yes
+        resp = QtWidgets.QMessageBox.question(
+            self, "Pose Tracker", prompt, buttons, default
+        )
+        if resp != QtWidgets.QMessageBox.Yes:
+            return
+
+        total_frames = len(self.session.frames_bgr)
+        if total_frames == 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Pose tracker", "Video frames are not loaded yet."
+            )
+            return
+
+        progress = QtWidgets.QProgressDialog(
+            "Running pose tracker...",
+            "Cancel",
+            0,
+            total_frames,
+            self,
+        )
+        progress.setWindowTitle("Pose Tracker")
+        progress.setWindowModality(QtCore.Qt.ApplicationModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        def progress_cb(done: int, total: int) -> bool:
+            progress.setMaximum(max(total, 1))
+            progress.setValue(done)
+            QtWidgets.QApplication.processEvents()
+            return not progress.wasCanceled()
+
+        pose_frames: Optional[List[Dict]] = None
+        self._pose_job_active = True
+        try:
+            pose_frames = run_pose_landmarks_on_frames(
+                self.session.frames_bgr,
+                self.session.fps,
+                settings,
+                model_path,
+                progress_cb,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "canceled" in message.lower():
+                QtWidgets.QMessageBox.information(
+                    self, "Pose tracker", "Pose tracking was canceled."
+                )
+            else:
+                QtWidgets.QMessageBox.critical(
+                    self, "Pose tracker failed", message or "Unknown error."
+                )
+        except Exception as exc:  # pragma: no cover - mediapipe runtime errors
+            QtWidgets.QMessageBox.critical(self, "Pose tracker failed", str(exc))
+        finally:
+            progress.close()
+            self._pose_job_active = False
+
+        if not pose_frames:
+            return
+
+        dataset = self.session.current_dataset
+        dataset["frames"] = pose_frames
+        dataset["fps"] = self.session.fps
+        dataset["pose_model_file"] = model_path.name
+        dataset["min_pose_detection_confidence"] = float(settings.get("det", 0.5))
+        dataset["min_pose_presence_confidence"] = float(settings.get("prs", 0.7))
+        dataset["min_tracking_confidence"] = float(settings.get("trk", 0.7))
+        dataset["ema_alpha"] = float(settings.get("ema", 0.0))
+        dataset["output_segmentation_masks"] = bool(settings.get("seg", False))
+        self.session.save_current_dataset()
+        self._render_frame(self.current_frame)
+        if force:
+            QtWidgets.QMessageBox.information(
+                self, "Pose tracker", "Pose overlays refreshed."
+            )
 
 
 class VideoCutView(QtWidgets.QWidget):
