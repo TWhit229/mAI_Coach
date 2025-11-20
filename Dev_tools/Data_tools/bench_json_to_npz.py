@@ -6,7 +6,7 @@ Convert labeled bench JSON reps into normalized numpy arrays for model training.
 - Output: one .npz per input, with:
     features: (T, D) float32   # normalized upper-body coordinates per frame
     mask:     (T,)  float32    # 1 if pose is present and valid, else 0
-    labels:   (T, N_ISSUES) float32  # per-frame issue event indicators (0/1)
+    labels:   (T, N_TAGS) float32  # per-frame tag event indicators (0/1)
     fps:      float32          # frames per second for this rep
 """
 
@@ -69,16 +69,16 @@ BENCH_LANDMARK_IDS = [
 ]
 
 
-def _load_issue_options() -> List[str]:
+def _load_tag_options() -> List[str]:
     cfg = load_label_config()
-    issues = cfg.get("issues") or []
-    if not issues:
-        raise ValueError("label_config.json defines no issue options.")
-    return issues
+    tags = cfg.get("tags") or []
+    if not tags:
+        raise ValueError("label_config.json defines no tag options.")
+    return tags
 
 
-ISSUE_OPTIONS = _load_issue_options()
-ISSUE_INDEX = {name: i for i, name in enumerate(ISSUE_OPTIONS)}
+TAG_OPTIONS = _load_tag_options()
+TAG_INDEX = {name: i for i, name in enumerate(TAG_OPTIONS)}
 
 
 # -------------------- Per-frame feature extraction ---------------------------
@@ -140,26 +140,26 @@ def extract_frame_features(frame: Dict) -> Tuple[np.ndarray, float]:
     return np.asarray(feats, dtype=np.float32), 1.0
 
 
-def build_label_matrix(num_frames: int, issue_events: List[Dict]) -> np.ndarray:
+def build_label_matrix(num_frames: int, tag_events: List[Dict]) -> np.ndarray:
     """
-    Build a (T, N_ISSUES) label matrix from issue_events list.
+    Build a (T, N_TAGS) label matrix from tag_events list.
 
-    For now we treat each issue event as a "spike" at its frame_index:
-    labels[frame_index, issue_index] = 1.
+    For now we treat each event as a "spike" at its frame_index:
+    labels[frame_index, tag_index] = 1.
     """
     T = num_frames
-    N = len(ISSUE_OPTIONS)
+    N = len(TAG_OPTIONS)
     labels = np.zeros((T, N), dtype=np.float32)
 
-    if not issue_events:
+    if not tag_events:
         return labels
 
-    for evt in issue_events:
+    for evt in tag_events:
         issue = evt.get("issue")
         fi = evt.get("frame_index")
         if issue is None or fi is None:
             continue
-        idx = ISSUE_INDEX.get(issue)
+        idx = TAG_INDEX.get(issue)
         if idx is None:
             continue
         if 0 <= fi < T:
@@ -176,6 +176,11 @@ def process_json_file(path: Path) -> dict:
     with path.open("r") as f:
         data = json.load(f)
 
+    if data.get("tracking_unreliable"):
+        raise ValueError(
+            f"{path.name} marked tracking_unreliable; skipping for training."
+        )
+
     frames = data.get("frames", [])
     T = len(frames)
     if T == 0:
@@ -190,16 +195,20 @@ def process_json_file(path: Path) -> dict:
         features[t] = feats_t
         mask[t] = m_t
 
-    issue_events = data.get("issue_events", [])
-    labels = build_label_matrix(T, issue_events)
+    tag_events = data.get("tag_events") or data.get("issue_events", [])
+    labels = build_label_matrix(T, tag_events)
 
     fps = float(data.get("fps", 30.0))
+    rep_tags = data.get("tags") or data.get("issues") or []
+    metrics = data.get("metrics") or {}
 
     return {
         "features": features,
         "mask": mask,
         "labels": labels,
         "fps": fps,
+        "rep_tags": rep_tags,
+        "metrics": metrics,
     }
 
 
@@ -241,6 +250,18 @@ def main():
             print(f"[ERROR] Failed on {jpath.name}: {e}")
             continue
 
+        metrics = res.get("metrics") or {}
+        metric_names: List[str] = []
+        metric_values: List[float] = []
+        for key, value in metrics.items():
+            if value is None or isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                metric_names.append(key)
+                metric_values.append(float(value))
+        rep_tags = res.get("rep_tags") or []
+        rep_tags_arr = np.array(rep_tags, dtype="<U32")
+
         out_path = outdir / f"{jpath.stem}_bench.npz"
         np.savez_compressed(
             out_path,
@@ -248,7 +269,10 @@ def main():
             mask=res["mask"],
             labels=res["labels"],
             fps=res["fps"],
-            issue_names=np.array(ISSUE_OPTIONS),
+            tag_names=np.array(TAG_OPTIONS),
+            rep_tags=rep_tags_arr,
+            metrics_names=np.array(metric_names, dtype="<U32"),
+            metrics_values=np.array(metric_values, dtype=np.float32),
         )
         print(
             f"[OK] {jpath.name} -> {out_path.name} "

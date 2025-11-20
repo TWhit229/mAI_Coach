@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 The PySide6 window contains:
 
-- **Labeler** – load a set of videos + dataset JSONs, scrub with transport controls, tag issues, and edit metadata. A “Save & Finish” button appears on the last clip when the workflow is pre-seeded.
+- **Labeler** – load a set of videos + dataset JSONs, scrub with transport controls, review pose metrics/tracking quality, assign form tags, and edit metadata. A “Save & Finish” button appears on the last clip when the workflow is pre-seeded.
 - **Video Cutter** – mark rep segments with in/out buttons, preview playback, and export clips via `ffmpeg`.
 - **Pose Tuner** – preview up to four videos in a grid while tweaking MediaPipe thresholds and smoothing parameters. Inline hints explain what each slider controls.
 

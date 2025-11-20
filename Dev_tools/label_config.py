@@ -11,7 +11,7 @@ LABEL_CONFIG_PATH = Path(__file__).resolve().parent / "label_config.json"
 
 EMPTY_CONFIG = {
     "movements": [],
-    "issues": [],
+    "tags": [],
     "movement_settings": {},
 }
 
@@ -61,9 +61,12 @@ def load_label_config() -> Dict[str, List[str]]:
     """Return dict with config stored entirely in JSON."""
     ensure_config_file()
     data = json.loads(LABEL_CONFIG_PATH.read_text())
+    tags = data.get("tags")
+    if not tags:
+        tags = data.get("issues")
     return {
         "movements": _sanitize_list(data.get("movements")),
-        "issues": _sanitize_list(data.get("issues")),
+        "tags": _sanitize_list(tags),
         "movement_settings": _sanitize_movement_settings(data.get("movement_settings")),
     }
 
@@ -72,7 +75,7 @@ def save_label_config(cfg: Dict[str, List[str]]) -> None:
     """Persist config (after sanitizing)."""
     clean = {
         "movements": _sanitize_list(cfg.get("movements")),
-        "issues": _sanitize_list(cfg.get("issues")),
+        "tags": _sanitize_list(cfg.get("tags") or cfg.get("issues")),
         "movement_settings": _sanitize_movement_settings(cfg.get("movement_settings")),
     }
     LABEL_CONFIG_PATH.write_text(json.dumps(clean, indent=2))
