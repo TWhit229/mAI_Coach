@@ -118,14 +118,20 @@ def draw_upper_body_overlay(
 
 ensure_config_file()
 
+DEFAULT_GOOD_ISSUE = "no_major_issues"
+
 
 def load_label_options():
     cfg = load_label_config()
-    return (
-        cfg.get("movements") or [],
-        cfg.get("issues") or [],
-        cfg.get("movement_settings") or {},
-    )
+    movements = cfg.get("movements") or []
+    issues = cfg.get("issues") or []
+    movement_settings = cfg.get("movement_settings") or {}
+
+    # Ensure our default "good" tag is always available in the UI
+    if DEFAULT_GOOD_ISSUE not in issues:
+        issues.append(DEFAULT_GOOD_ISSUE)
+
+    return movements, issues, movement_settings
 
 
 QUALITY_OPTIONS = ["1", "2", "3", "4", "5"]
@@ -348,9 +354,21 @@ class VideoSession(QtCore.QObject):
         frames_meta = dataset.get("frames") or []
         if len(frames_meta) != len(self.frames_bgr):
             frames_meta = [
-                self._blank_frame_meta(i, self.fps) for i in range(len(self.frames_bgr))
+                self._blank_frame_meta(i, self.fps)
+                for i in range(len(self.frames_bgr))
             ]
             dataset["frames"] = frames_meta
+
+        # Backfill per-frame issues if missing
+        for i, rec in enumerate(frames_meta):
+            if "frame_index" not in rec:
+                rec["frame_index"] = i
+            if "time_ms" not in rec:
+                rec["time_ms"] = int(round(i * 1000.0 / self.fps))
+            # If no issues set for this frame, assume it's good
+            issues = rec.get("issues")
+            if not issues:
+                rec["issues"] = [DEFAULT_GOOD_ISSUE]
 
         dataset.setdefault("issue_events", [])
         self.current_dataset = dataset
@@ -385,7 +403,8 @@ class VideoSession(QtCore.QObject):
             "time_ms": int(round(fi * 1000.0 / fps)),
             "pose_present": False,
             "landmarks": None,
-        }
+            "issues": [DEFAULT_GOOD_ISSUE],   # <--- add this
+        }   
 
     def save_current_dataset(self):
         if not (self.dataset_dir and self.current_dataset and self.current_index >= 0):
@@ -1238,27 +1257,66 @@ class LabelerView(QtWidgets.QWidget):
         frames = dataset.get("frames") or []
         if not frames:
             return
+
         fi = max(0, min(self.current_frame, len(frames) - 1))
         tag = self.issue_picker.currentText()
-        time_ms = frames[fi].get(
-            "time_ms", int(round(fi * 1000.0 / (dataset.get("fps") or 30.0)))
+        frame_rec = frames[fi]
+
+        # Compute time_ms from frame metadata or fallback
+        time_ms = frame_rec.get(
+            "time_ms",
+            int(round(fi * 1000.0 / (dataset.get("fps") or 30.0)))
         )
-        dataset.setdefault("issue_events", []).append(
-            {"issue": tag, "frame_index": int(fi), "time_ms": int(time_ms)}
-        )
+
+        # Ensure there is an issues list for this frame
+        issues = frame_rec.get("issues") or [DEFAULT_GOOD_ISSUE]
+
+        if tag == DEFAULT_GOOD_ISSUE:
+            # Explicitly marking the frame as "good": wipe other tags
+            issues = [DEFAULT_GOOD_ISSUE]
+        else:
+            # Remove the default good tag, then add this issue
+            issues = [i for i in issues if i != DEFAULT_GOOD_ISSUE]
+            if tag not in issues:
+                issues.append(tag)
+
+            # Only log issue_events for "problem" tags
+            dataset.setdefault("issue_events", []).append(
+                {"issue": tag, "frame_index": int(fi), "time_ms": int(time_ms)}
+            )
+
+        frame_rec["issues"] = issues
         self._refresh_issue_events()
 
     def _remove_issue_tag(self):
         dataset = self.session.current_dataset
         if not dataset:
             return
+
         sel = self.issue_events.selectedIndexes()
         if not sel:
             return
+
         idx = sel[0].row()
         events = dataset.get("issue_events", [])
         if 0 <= idx < len(events):
-            events.pop(idx)
+            evt = events.pop(idx)
+            frame_index = evt.get("frame_index")
+            tag = evt.get("issue")
+
+            frames = dataset.get("frames") or []
+            if frame_index is not None and 0 <= frame_index < len(frames):
+                frec = frames[frame_index]
+                issues = frec.get("issues") or [DEFAULT_GOOD_ISSUE]
+
+                # Remove that tag from the frame
+                issues = [i for i in issues if i != tag]
+                if not issues:
+                    # If no issues remain, assume this frame is good
+                    issues = [DEFAULT_GOOD_ISSUE]
+
+                frec["issues"] = issues
+
             self._refresh_issue_events()
 
     # Saving ---------------------------------------------------------
@@ -1378,6 +1436,17 @@ class LabelerView(QtWidgets.QWidget):
             return
 
         dataset = self.session.current_dataset
+        old_frames = dataset.get("frames") or []
+
+        # Preserve per-frame issues, defaulting to no_major_issues
+        for i, pf in enumerate(pose_frames):
+            issues = None
+            if i < len(old_frames):
+                issues = old_frames[i].get("issues")
+            if not issues:
+                issues = [DEFAULT_GOOD_ISSUE]
+            pf["issues"] = issues
+
         dataset["frames"] = pose_frames
         dataset["fps"] = self.session.fps
         dataset["pose_model_file"] = model_path.name
