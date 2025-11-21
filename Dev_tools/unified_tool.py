@@ -1399,10 +1399,6 @@ class LabelerView(QtWidgets.QWidget):
         meta_grid.setVerticalSpacing(2)
         meta_grid.setContentsMargins(0, 0, 0, 0)
 
-        self.quality_cb = QtWidgets.QComboBox()
-        self.quality_cb.addItems(QUALITY_OPTIONS)
-        self.quality_cb.setCurrentText("3")
-
         self.load_spin = QtWidgets.QSpinBox()
         self.load_spin.setRange(0, 2000)
         self.load_spin.setSuffix(" lbs")
@@ -1421,7 +1417,6 @@ class LabelerView(QtWidgets.QWidget):
         self.lens_cb.addItems(LENS_OPTIONS)
 
         meta_fields = [
-            ("overall_quality", self.quality_cb),
             ("load_lbs", self.load_spin),
             ("RPE", self.rpe_cb),
             ("camera_angle", self.camera_cb),
@@ -2239,6 +2234,7 @@ class LabelerView(QtWidgets.QWidget):
             selected = [DEFAULT_OK_TAG]
         dataset["tags"] = selected
         self.session.save_current_dataset()
+        self._reload_current_dataset_from_disk()
         QtWidgets.QMessageBox.information(self, "Saved", "Dataset JSON saved.")
 
     def _ensure_pose_data(self, force: bool = False):

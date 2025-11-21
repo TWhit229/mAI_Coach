@@ -40,6 +40,38 @@ The PySide6 window contains:
 
 All labels/tags live in `label_config.json`. Edit it via the admin panel tile or by hand (keep it under version control so the list stays in sync for your team).
 
+## Dataset preprocessing script
+
+Need NumPy feature tensors for model training? Use `Dev_tools/preprocess_bench_dataset.py`:
+
+```bash
+python Dev_tools/preprocess_bench_dataset.py \
+  --dataset_dir path/to/jsons \
+  --output_prefix bench_v1
+```
+
+If you omit the flags, the script will pop up a folder picker and prompt you for an output prefix. It generates:
+
+- `<prefix>_X.npy` – feature matrix (12 features per rep)
+- `<prefix>_y.npy` – multi-hot label vectors following `ALL_TAGS`
+- `<prefix>_meta.json` – feature names, tag names, and dataset stats
+
+Only label-friendly (tracking quality ≥ 0.5, not marked unreliable) reps are included.
+
+## MLP training script
+
+Once you have `bench_v1_X.npy`/`bench_v1_y.npy`/`bench_v1_meta.json`, train a tiny classifier with:
+
+```bash
+python train_bench_mlp.py \
+  --data_prefix bench_v1 \
+  --output_prefix bench_mlp_v1 \
+  --epochs 200 \
+  --batch_size 32
+```
+
+The script uses PyTorch + scikit-learn (train/dev split, scaling, metrics) and saves the model weights, scaler parameters, and metadata JSON beside the prefix you provide.
+
 ## Archived utilities
 
 Legacy Tkinter scripts (`auto_cut_video.py`, `multi_video_pose_tuner.py`, etc.) have been removed from the primary workflow. If you still need them for reference, check the project history prior to the `unified-tool-polish` branch.
