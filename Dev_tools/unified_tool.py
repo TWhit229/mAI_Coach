@@ -11,6 +11,7 @@ import os
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -18,9 +19,21 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import PySide6
+import torch
+import torch.nn as nn
 from PySide6 import QtCore, QtGui, QtWidgets
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
 
-from label_config import ensure_config_file, load_label_config, save_label_config
+from label_config import (
+    DEFAULT_ML_PRESETS,
+    DEFAULT_TAGS,
+    ensure_config_file,
+    load_label_config,
+    save_label_config,
+)
 
 try:
     import mediapipe as mp
@@ -41,6 +54,11 @@ except Exception:
 _PLUGIN_DIR = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
 os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(_PLUGIN_DIR))
 os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
+DEV_ROOT = Path(__file__).resolve().parent
+DATA_DIR = DEV_ROOT / "data"
+MODEL_DIR = DEV_ROOT / "models"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # --- Shared helpers copied from the legacy Tk labeler -----------------------
@@ -139,6 +157,306 @@ def load_label_options():
     return movements, tags, merged_settings
 
 
+def load_ml_presets():
+    cfg = load_label_config()
+    presets = cfg.get("ml_presets") or {}
+    tags = cfg.get("tags") or []
+    movements = cfg.get("movements") or []
+    return presets, tags, movements
+
+
+def save_ml_presets(presets: Dict[str, Dict]):
+    save_label_config({"ml_presets": presets})
+
+
+class BenchMLP(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, out_dim),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def _extract_training_example(rep: Dict, tag_order: Sequence[str]) -> Optional[Tuple[List[float], List[int]]]:
+    if rep.get("tracking_unreliable", False):
+        return None
+    metrics = rep.get("metrics") or {}
+    frames = rep.get("frames") or []
+    tracking_quality = float(metrics.get("tracking_quality", 0.0))
+    if tracking_quality < 0.5 or not frames:
+        return None
+    load_lbs = float(rep.get("load_lbs") or 0.0)
+    grip_ratio_median = float(metrics.get("grip_ratio_median", 0.0))
+    grip_ratio_range = float(metrics.get("grip_ratio_range", 0.0))
+    grip_uneven_median = float(metrics.get("grip_uneven_median", 0.0))
+    grip_uneven_norm = float(metrics.get("grip_uneven_norm", 0.0))
+    bar_tilt_median_deg = float(metrics.get("bar_tilt_median_deg", 0.0))
+    bar_tilt_deg_max = float(metrics.get("bar_tilt_deg_max", 0.0))
+    tracking_bad_ratio = float(metrics.get("tracking_bad_ratio", 0.0))
+    wrist_y_vals: List[float] = []
+    for frec in frames:
+        if not frec or not frec.get("pose_present"):
+            continue
+        lms = frec.get("landmarks")
+        if not lms:
+            continue
+        ls = _landmark_xy(lms, L_SHOULDER)
+        rs = _landmark_xy(lms, R_SHOULDER)
+        lw = _landmark_xy(lms, L_WRIST)
+        rw = _landmark_xy(lms, R_WRIST)
+        if not (ls and rs and lw and rw):
+            continue
+        shoulder_width = _dist(ls, rs)
+        if shoulder_width <= 1e-6:
+            continue
+        chest_y = 0.5 * (ls[1] + rs[1])
+        lw_y_norm = (lw[1] - chest_y) / shoulder_width
+        rw_y_norm = (rw[1] - chest_y) / shoulder_width
+        avg_y = 0.5 * (lw_y_norm + rw_y_norm)
+        wrist_y_vals.append(avg_y)
+    if wrist_y_vals:
+        wrist_y_min = float(min(wrist_y_vals))
+        wrist_y_max = float(max(wrist_y_vals))
+        wrist_y_range = wrist_y_max - wrist_y_min
+    else:
+        wrist_y_min = wrist_y_max = wrist_y_range = 0.0
+    features = [
+        load_lbs,
+        grip_ratio_median,
+        grip_ratio_range,
+        grip_uneven_median,
+        grip_uneven_norm,
+        bar_tilt_median_deg,
+        bar_tilt_deg_max,
+        tracking_bad_ratio,
+        tracking_quality,
+        wrist_y_min,
+        wrist_y_max,
+        wrist_y_range,
+    ]
+    rep_tags = set(rep.get("tags") or [])
+    labels = [1 if tag in rep_tags else 0 for tag in tag_order]
+    return features, labels
+
+
+def preprocess_dataset(
+    dataset_dir: Path, output_prefix: Path, tag_order: Sequence[str], log: Callable[[str], None]
+) -> Dict[str, str]:
+    dataset_dir = Path(dataset_dir).expanduser().resolve()
+    output_prefix = Path(output_prefix).expanduser()
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    json_files = sorted(dataset_dir.glob("*.json"))
+    if not json_files:
+        raise FileNotFoundError(f"No JSON files found in {dataset_dir}")
+    X: List[List[float]] = []
+    Y: List[List[int]] = []
+    for path in json_files:
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            log(f"Skip {path.name}: failed to load JSON ({exc})")
+            continue
+        example = _extract_training_example(data, tag_order)
+        if example is None:
+            continue
+        feats, labels = example
+        X.append(feats)
+        Y.append(labels)
+    if not X:
+        raise RuntimeError("No valid examples found.")
+    X_arr = np.array(X, dtype=np.float32)
+    Y_arr = np.array(Y, dtype=np.int64)
+    base = str(output_prefix)
+    x_path = base + "_X.npy"
+    y_path = base + "_y.npy"
+    meta_path = base + "_meta.json"
+    np.save(x_path, X_arr)
+    np.save(y_path, Y_arr)
+    meta = {
+        "feature_names": [
+            "load_lbs",
+            "grip_ratio_median",
+            "grip_ratio_range",
+            "grip_uneven_median",
+            "grip_uneven_norm",
+            "bar_tilt_median_deg",
+            "bar_tilt_deg_max",
+            "tracking_bad_ratio",
+            "tracking_quality",
+            "wrist_y_min",
+            "wrist_y_max",
+            "wrist_y_range",
+        ],
+        "tags": list(tag_order),
+        "num_examples": int(X_arr.shape[0]),
+        "num_features": int(X_arr.shape[1]),
+        "num_tags": int(Y_arr.shape[1]),
+    }
+    Path(meta_path).write_text(json.dumps(meta, indent=2))
+    log(f"Saved {x_path} ({X_arr.shape})")
+    log(f"Saved {y_path} ({Y_arr.shape})")
+    log(f"Saved {meta_path}")
+    return {"X": x_path, "y": y_path, "meta": meta_path}
+
+
+def _split_and_scale(X, y, dev_fraction, seed):
+    X_train, X_dev, y_train, y_dev = train_test_split(
+        X,
+        y,
+        test_size=dev_fraction,
+        random_state=seed,
+        shuffle=True,
+    )
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_dev_scaled = scaler.transform(X_dev)
+    return X_train_scaled, X_dev_scaled, y_train, y_dev, scaler
+
+
+def _build_dataloaders(X_train, y_train, X_dev, y_dev, batch_size):
+    X_train_t = torch.from_numpy(X_train).float()
+    y_train_t = torch.from_numpy(y_train).float()
+    X_dev_t = torch.from_numpy(X_dev).float()
+    y_dev_t = torch.from_numpy(y_dev).float()
+    train_loader = DataLoader(TensorDataset(X_train_t, y_train_t), batch_size=batch_size, shuffle=True)
+    dev_loader = DataLoader(TensorDataset(X_dev_t, y_dev_t), batch_size=batch_size, shuffle=False)
+    return train_loader, dev_loader, X_dev_t, y_dev_t
+
+
+def _train_model(model, train_loader, dev_loader, device, epochs, log: Callable[[str], None]):
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    best_dev_loss = float("inf")
+    best_state_dict = None
+    patience = 10
+    epochs_without_improve = 0
+    for epoch in range(epochs):
+        model.train()
+        train_loss_sum = 0.0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            train_loss_sum += loss.item() * xb.size(0)
+        avg_train_loss = train_loss_sum / len(train_loader.dataset)
+        model.eval()
+        dev_loss_sum = 0.0
+        with torch.no_grad():
+            for xb, yb in dev_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                dev_loss_sum += loss.item() * xb.size(0)
+        avg_dev_loss = dev_loss_sum / len(dev_loader.dataset)
+        log(
+            f"Epoch {epoch + 1}/{epochs} train_loss={avg_train_loss:.4f} dev_loss={avg_dev_loss:.4f}"
+        )
+        if avg_dev_loss < best_dev_loss - 1e-4:
+            best_dev_loss = avg_dev_loss
+            best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            epochs_without_improve = 0
+        else:
+            epochs_without_improve += 1
+            if epochs_without_improve >= patience:
+                log("Early stopping triggered.")
+                break
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+    return best_dev_loss, epoch + 1
+
+
+def _evaluate_model(model, X_dev_t, y_dev, tags, device, log: Callable[[str], None]):
+    model.eval()
+    with torch.no_grad():
+        logits = model(X_dev_t.to(device))
+        probs = torch.sigmoid(logits).cpu().numpy()
+    y_pred = (probs >= 0.5).astype(int)
+    subset_acc = accuracy_score(y_dev, y_pred)
+    micro_f1 = f1_score(y_dev, y_pred, average="micro", zero_division=0)
+    macro_f1 = f1_score(y_dev, y_pred, average="macro", zero_division=0)
+    log("")
+    log("==== Overall dev stats ====")
+    log(f"Subset accuracy: {subset_acc:.3f}")
+    log(f"Micro F1: {micro_f1:.3f}")
+    log(f"Macro F1: {macro_f1:.3f}")
+    for idx, tag in enumerate(tags):
+        log(f"\n==== {tag} ====")
+        report = classification_report(
+            y_dev[:, idx],
+            y_pred[:, idx],
+            digits=3,
+            zero_division=0,
+        )
+        for line in report.strip().splitlines():
+            log(line)
+
+
+def train_dataset_model(
+    data_prefix: Path,
+    output_prefix: Path,
+    tags: Sequence[str],
+    epochs: int,
+    batch_size: int,
+    dev_fraction: float,
+    seed: int,
+    log: Callable[[str], None],
+) -> Dict[str, str]:
+    data_prefix = Path(data_prefix).expanduser()
+    output_prefix = Path(output_prefix).expanduser()
+    base = str(data_prefix)
+    X = np.load(base + "_X.npy")
+    y = np.load(base + "_y.npy")
+    with open(base + "_meta.json", "r") as f:
+        meta = json.load(f)
+    X_train, X_dev, y_train, y_dev, scaler = _split_and_scale(X, y, dev_fraction, seed)
+    train_loader, dev_loader, X_dev_t, y_dev_t = _build_dataloaders(
+        X_train, y_train, X_dev, y_dev, batch_size
+    )
+    in_dim = X_train.shape[1]
+    out_dim = y_train.shape[1]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = BenchMLP(in_dim, out_dim).to(device)
+    best_dev_loss, epochs_trained = _train_model(
+        model, train_loader, dev_loader, device, epochs, log
+    )
+    _evaluate_model(model, X_dev_t, y_dev, meta.get("tags", tags), device, log)
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    model_path = f"{output_prefix}_model.pt"
+    scaler_path = f"{output_prefix}_scaler.npz"
+    meta_path = f"{output_prefix}_train_meta.json"
+    torch.save(model.state_dict(), model_path)
+    np.savez(scaler_path, mean=scaler.mean_, scale=scaler.scale_)
+    train_meta = {
+        "feature_names": meta.get("feature_names", []),
+        "tags": meta.get("tags", tags),
+        "hidden_layers": [32, 16],
+        "threshold": 0.5,
+        "epochs_trained": int(epochs_trained),
+        "best_dev_loss": float(best_dev_loss),
+        "dev_fraction": float(dev_fraction),
+    }
+    with open(meta_path, "w") as f:
+        json.dump(train_meta, f, indent=2)
+    log(f"\nSaved model -> {model_path}")
+    log(f"Saved scaler -> {scaler_path}")
+    log(f"Saved meta -> {meta_path}")
+    return {
+        "model": model_path,
+        "scaler": scaler_path,
+        "meta": meta_path,
+    }
+
+
 QUALITY_OPTIONS = ["1", "2", "3", "4", "5"]
 RPE_OPTIONS = [f"{x / 2:.1f}" for x in range(2, 21)]
 CAMERA_ANGLE_OPTIONS = [
@@ -166,7 +484,7 @@ BODY_PART_OPTIONS = [
 BENCH_DEFAULT_PARTS = ["hands", "forearms", "upper_arms", "shoulders"]
 
 POSE_MODEL_PATHS = {
-    variant: Path(__file__).resolve().parent / f"pose_landmarker_{variant}.task"
+    variant: MODEL_DIR / f"pose_landmarker_{variant}.task"
     for variant in MODEL_VARIANTS
 }
 
@@ -267,6 +585,57 @@ def _rotate_frame_if_needed(frame: np.ndarray, rotation: int) -> np.ndarray:
     if rotation == 270:
         return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
     return frame
+
+
+def preprocess_video_for_pose(
+    video_path: Path, target_height: int = 720, target_fps: float = 15.0
+) -> Tuple[Path, float]:
+    """Downscale/cap FPS to speed up pose tracking."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video {video_path}")
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = fps if fps and fps > 0 else target_fps
+    out_fps = target_fps if target_fps and target_fps > 0 else fps
+
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        cap.release()
+        raise RuntimeError(f"No frames found in {video_path}")
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    h, w = frame.shape[:2]
+    scale = target_height / float(h) if h else 1.0
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(2, int(round(w * scale)))
+    # Width must be even for many codecs.
+    if new_w % 2:
+        new_w += 1
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4", prefix="pose_pre_")
+    os.close(fd)
+    tmp = Path(tmp_path)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(tmp), fourcc, out_fps, (new_w, new_h))
+    if not writer.isOpened():
+        cap.release()
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("Failed to create temporary writer for preprocessing.")
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            writer.write(resized)
+    finally:
+        cap.release()
+        writer.release()
+
+    if not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("Preprocess output is empty.")
+    return tmp, out_fps
 
 def _pose_model_path(variant: str) -> Path:
     key = (variant or "full").lower()
@@ -659,6 +1028,9 @@ def default_movement_settings(name: str = "") -> Dict:
     )
     return {
         "model": "full",
+        "preprocess": True,
+        "pre_height": 720,
+        "pre_fps": 15.0,
         "det": 0.5,
         "prs": 0.7,
         "trk": 0.7,
@@ -900,6 +1272,19 @@ class MovementDialog(QtWidgets.QDialog):
             self.model_box.setCurrentIndex(idx)
         layout.addRow("Model variant", self.model_box)
 
+        self.preprocess_check = QtWidgets.QCheckBox("Preprocess (downscale/FPS cap)")
+        self.preprocess_check.setChecked(bool(cfg.get("preprocess", True)))
+        self.pre_height_spin = QtWidgets.QSpinBox()
+        self.pre_height_spin.setRange(240, 2160)
+        self.pre_height_spin.setValue(int(cfg.get("pre_height", 720)))
+        self.pre_fps_spin = QtWidgets.QDoubleSpinBox()
+        self.pre_fps_spin.setRange(1.0, 60.0)
+        self.pre_fps_spin.setValue(float(cfg.get("pre_fps", 15.0)))
+        self.pre_fps_spin.setSingleStep(1.0)
+        layout.addRow(self.preprocess_check)
+        layout.addRow("Target height (px)", self.pre_height_spin)
+        layout.addRow("Target FPS", self.pre_fps_spin)
+
         self.det_spin = QtWidgets.QDoubleSpinBox()
         self.det_spin.setRange(0.1, 1.0)
         self.det_spin.setSingleStep(0.05)
@@ -985,15 +1370,18 @@ class MovementDialog(QtWidgets.QDialog):
         ] or BODY_PART_OPTIONS.copy()
         return name, {
             "model": self.model_box.currentText(),
+            "preprocess": self.preprocess_check.isChecked(),
+            "pre_height": self.pre_height_spin.value(),
+            "pre_fps": self.pre_fps_spin.value(),
             "det": self.det_spin.value(),
             "prs": self.prs_spin.value(),
             "trk": self.trk_spin.value(),
             "ema": self.ema_spin.value(),
             "seg": self.seg_check.isChecked(),
-             "grip_wide_threshold": self.grip_wide_spin.value(),
-             "grip_narrow_threshold": self.grip_narrow_spin.value(),
-             "grip_uneven_threshold": self.grip_uneven_spin.value(),
-             "bar_tilt_threshold": self.bar_tilt_spin.value(),
+            "grip_wide_threshold": self.grip_wide_spin.value(),
+            "grip_narrow_threshold": self.grip_narrow_spin.value(),
+            "grip_uneven_threshold": self.grip_uneven_spin.value(),
+            "bar_tilt_threshold": self.bar_tilt_spin.value(),
             "body_parts": body_parts,
         }
 
@@ -1211,6 +1599,7 @@ class HomePage(QtWidgets.QWidget):
     requested_cutting = QtCore.Signal()
     requested_labeling = QtCore.Signal()
     requested_pose = QtCore.Signal()
+    requested_training = QtCore.Signal()
 
     def __init__(self):
         super().__init__()
@@ -1235,6 +1624,7 @@ class HomePage(QtWidgets.QWidget):
         add_button(0, 1, "Video Cutting", self.requested_cutting.emit)
         add_button(1, 0, "Video Labeling", self.requested_labeling.emit)
         add_button(1, 1, "Pose Tuning", self.requested_pose.emit)
+        add_button(2, 0, "Dataset + Model", self.requested_training.emit)
         layout.addStretch(1)
 
 
@@ -1275,6 +1665,381 @@ class WorkflowPlaceholderPage(QtWidgets.QWidget):
         if self._home_cb:
             self._home_cb()
 
+
+class DatasetTrainerView(QtWidgets.QWidget):
+    log_signal = QtCore.Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._home_cb: Optional[Callable[[], None]] = None
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._future: Optional[concurrent.futures.Future] = None
+        self.ml_presets: Dict[str, Dict] = {}
+        self.default_tags: List[str] = []
+        self.movements: List[str] = []
+
+        self._build_ui()
+        self.log_signal.connect(self._append_log)
+        self.reload_presets()
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        header_row = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("Dataset + Model Trainer")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        header_row.addWidget(title)
+        header_row.addStretch(1)
+        self.status_label = QtWidgets.QLabel("")
+        header_row.addWidget(self.status_label)
+        home_btn = QtWidgets.QPushButton("Home")
+        home_btn.clicked.connect(self._go_home)
+        header_row.addWidget(home_btn)
+        layout.addLayout(header_row)
+
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.addWidget(QtWidgets.QLabel("Preset"))
+        self.preset_cb = QtWidgets.QComboBox()
+        self.preset_cb.currentTextChanged.connect(self._on_preset_change)
+        preset_row.addWidget(self.preset_cb, stretch=1)
+        self.reload_btn = QtWidgets.QPushButton("Reload")
+        self.reload_btn.clicked.connect(self.reload_presets)
+        preset_row.addWidget(self.reload_btn)
+        self.save_btn = QtWidgets.QPushButton("Save")
+        self.save_btn.clicked.connect(self._save_preset)
+        preset_row.addWidget(self.save_btn)
+        self.save_as_btn = QtWidgets.QPushButton("Save As")
+        self.save_as_btn.clicked.connect(self._save_preset_as)
+        preset_row.addWidget(self.save_as_btn)
+        layout.addLayout(preset_row)
+
+        self.tag_edit = QtWidgets.QPlainTextEdit()
+        self.tag_edit.setPlaceholderText("Tag order (one per line or comma-separated)")
+        tag_layout = QtWidgets.QVBoxLayout()
+        tag_layout.addWidget(QtWidgets.QLabel("Tags (order for multi-hot labels)"))
+        tag_layout.addWidget(self.tag_edit)
+
+        pre_group = QtWidgets.QGroupBox("Preprocess JSON -> tensors")
+        pre_form = QtWidgets.QFormLayout(pre_group)
+        self.dataset_dir_edit = QtWidgets.QLineEdit()
+        dataset_row = QtWidgets.QHBoxLayout()
+        dataset_row.addWidget(self.dataset_dir_edit)
+        dataset_btn = QtWidgets.QPushButton("Browse")
+        dataset_btn.clicked.connect(self._browse_dataset_dir)
+        dataset_row.addWidget(dataset_btn)
+        pre_form.addRow("Dataset folder", dataset_row)
+
+        self.pre_output_edit = QtWidgets.QLineEdit()
+        pre_form.addRow("Output prefix", self.pre_output_edit)
+        self.preprocess_btn = QtWidgets.QPushButton("Run preprocess")
+        self.preprocess_btn.clicked.connect(self._start_preprocess)
+        pre_form.addRow(self.preprocess_btn)
+
+        train_group = QtWidgets.QGroupBox("Train MLP classifier")
+        train_form = QtWidgets.QFormLayout(train_group)
+        self.train_data_prefix_edit = QtWidgets.QLineEdit()
+        data_row = QtWidgets.QHBoxLayout()
+        data_row.addWidget(self.train_data_prefix_edit)
+        data_btn = QtWidgets.QPushButton("Pick _X.npy")
+        data_btn.clicked.connect(self._browse_data_prefix)
+        data_row.addWidget(data_btn)
+        train_form.addRow("Data prefix", data_row)
+
+        self.train_output_prefix_edit = QtWidgets.QLineEdit()
+        train_form.addRow("Output prefix", self.train_output_prefix_edit)
+
+        self.epoch_spin = QtWidgets.QSpinBox()
+        self.epoch_spin.setRange(1, 10000)
+        self.epoch_spin.setValue(200)
+        self.batch_spin = QtWidgets.QSpinBox()
+        self.batch_spin.setRange(1, 1024)
+        self.batch_spin.setValue(32)
+        self.dev_spin = QtWidgets.QDoubleSpinBox()
+        self.dev_spin.setRange(0.05, 0.9)
+        self.dev_spin.setSingleStep(0.05)
+        self.dev_spin.setValue(0.2)
+        self.dev_spin.setDecimals(3)
+        self.seed_spin = QtWidgets.QSpinBox()
+        self.seed_spin.setRange(0, 10_000)
+        self.seed_spin.setValue(42)
+
+        train_form.addRow("Epochs", self.epoch_spin)
+        train_form.addRow("Batch size", self.batch_spin)
+        train_form.addRow("Dev fraction", self.dev_spin)
+        train_form.addRow("Seed", self.seed_spin)
+
+        self.train_btn = QtWidgets.QPushButton("Run training")
+        self.train_btn.clicked.connect(self._start_training)
+        train_form.addRow(self.train_btn)
+
+        top_split = QtWidgets.QHBoxLayout()
+        top_split.addWidget(pre_group, stretch=1)
+        top_split.addWidget(train_group, stretch=1)
+        top_split.addLayout(tag_layout, stretch=1)
+        layout.addLayout(top_split)
+
+        self.log_box = QtWidgets.QTextEdit()
+        self.log_box.setReadOnly(True)
+        layout.addWidget(QtWidgets.QLabel("Logs"))
+        layout.addWidget(self.log_box, stretch=1)
+
+    def set_home_callback(self, cb: Callable[[], None]):
+        self._home_cb = cb
+
+    def _go_home(self):
+        if self._home_cb:
+            self._home_cb()
+
+    def reload_presets(self):
+        presets, tags, movements = load_ml_presets()
+        self.default_tags = tags or self.default_tags
+        self.movements = movements or self.movements
+        if not presets:
+            presets = self.ml_presets or {}
+        if not presets:
+            base = dict(DEFAULT_ML_PRESETS["bench"])
+            base["tags"] = self.default_tags or base.get("tags") or DEFAULT_TAGS
+            presets = {"bench": base}
+        self.ml_presets = presets
+        current = self.preset_cb.currentText()
+        self.preset_cb.blockSignals(True)
+        self.preset_cb.clear()
+        names = list(presets.keys())
+        extra = [m for m in self.movements if m not in names]
+        names += extra
+        if not names:
+            names = ["bench"]
+        for name in names:
+            self.preset_cb.addItem(name)
+        if current and self.preset_cb.findText(current) >= 0:
+            self.preset_cb.setCurrentText(current)
+        else:
+            self.preset_cb.setCurrentIndex(0)
+        self.preset_cb.blockSignals(False)
+        self._load_preset(self.preset_cb.currentText())
+
+    def _on_preset_change(self, name: str):
+        if name:
+            self._load_preset(name)
+
+    def _load_preset(self, name: str):
+        preset = self.ml_presets.get(name)
+        if not preset:
+            dataset_dir = DATA_DIR / "JSON"
+            if "side" in name:
+                dataset_dir = dataset_dir / "side"
+            preset = {
+                "preprocess": {
+                    "dataset_dir": str(dataset_dir),
+                    "output_prefix": str(DATA_DIR / f"{name}_v1"),
+                },
+                "train": {
+                    "data_prefix": str(DATA_DIR / f"{name}_v1"),
+                    "output_prefix": str(MODEL_DIR / f"{name}_mlp_v1"),
+                    "epochs": 200,
+                    "batch_size": 32,
+                    "dev_fraction": 0.2,
+                    "seed": 42,
+                },
+                "tags": self.default_tags,
+            }
+            self.ml_presets[name] = preset
+        pre_cfg = preset.get("preprocess") or {}
+        train_cfg = preset.get("train") or {}
+        tags = preset.get("tags") or self.default_tags
+        self.dataset_dir_edit.setText(str(pre_cfg.get("dataset_dir", "")))
+        self.pre_output_edit.setText(str(pre_cfg.get("output_prefix", "")))
+        self.train_data_prefix_edit.setText(str(train_cfg.get("data_prefix", "")))
+        self.train_output_prefix_edit.setText(str(train_cfg.get("output_prefix", "")))
+        self.epoch_spin.setValue(int(train_cfg.get("epochs", 200)))
+        self.batch_spin.setValue(int(train_cfg.get("batch_size", 32)))
+        self.dev_spin.setValue(float(train_cfg.get("dev_fraction", 0.2)))
+        self.seed_spin.setValue(int(train_cfg.get("seed", 42)))
+        self._set_tags_text(tags)
+
+    def _set_tags_text(self, tags: Sequence[str]):
+        cleaned = "\n".join(tags)
+        self.tag_edit.blockSignals(True)
+        self.tag_edit.setPlainText(cleaned)
+        self.tag_edit.blockSignals(False)
+
+    def _active_tags(self) -> List[str]:
+        raw = self.tag_edit.toPlainText().replace(",", "\n").splitlines()
+        tags = [t.strip() for t in raw if t.strip()]
+        if not tags:
+            tags = self.default_tags or DEFAULT_TAGS
+        return tags
+
+    def _save_preset(self):
+        name = self.preset_cb.currentText().strip() or "traditional_bench"
+        self._persist_preset(name)
+        QtWidgets.QMessageBox.information(self, "Saved", f"Preset saved for {name}.")
+
+    def _save_preset_as(self):
+        text, ok = QtWidgets.QInputDialog.getText(self, "Save preset as", "Name")
+        if not ok or not text.strip():
+            return
+        name = text.strip()
+        if self.preset_cb.findText(name) < 0:
+            self.preset_cb.addItem(name)
+        self.preset_cb.setCurrentText(name)
+        self._persist_preset(name)
+        QtWidgets.QMessageBox.information(self, "Saved", f"Preset saved for {name}.")
+
+    def _persist_preset(self, name: str):
+        preset = {
+            "preprocess": {
+                "dataset_dir": self.dataset_dir_edit.text().strip(),
+                "output_prefix": self.pre_output_edit.text().strip(),
+            },
+            "train": {
+                "data_prefix": self.train_data_prefix_edit.text().strip(),
+                "output_prefix": self.train_output_prefix_edit.text().strip(),
+                "epochs": int(self.epoch_spin.value()),
+                "batch_size": int(self.batch_spin.value()),
+                "dev_fraction": float(self.dev_spin.value()),
+                "seed": int(self.seed_spin.value()),
+            },
+            "tags": self._active_tags(),
+        }
+        self.ml_presets[name] = preset
+        save_ml_presets(self.ml_presets)
+
+    def _browse_dataset_dir(self):
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select dataset folder", str(Path.home())
+        )
+        if selected:
+            self.dataset_dir_edit.setText(selected)
+
+    def _browse_data_prefix(self):
+        fname, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select features file (_X.npy)",
+            str(Path.home()),
+            "NumPy files (*.npy);;All files (*.*)",
+        )
+        if not fname:
+            return
+        path = Path(fname)
+        if path.name.endswith("_X.npy"):
+            prefix = str(path.with_name(path.name[:-6]))
+        else:
+            prefix = str(path.with_suffix(""))
+        self.train_data_prefix_edit.setText(prefix)
+        if not self.train_output_prefix_edit.text().strip():
+            base = Path(prefix).name
+            self.train_output_prefix_edit.setText(str(MODEL_DIR / f"{base}_mlp_v1"))
+
+    def _start_preprocess(self):
+        dataset_dir = self.dataset_dir_edit.text().strip()
+        output_prefix = self.pre_output_edit.text().strip()
+        tags = self._active_tags()
+        name = self.preset_cb.currentText().strip() or "traditional_bench"
+        preset = self.ml_presets.get(name, {})
+        preset_pre = preset.get("preprocess") or {}
+        if not dataset_dir:
+            dataset_dir = preset_pre.get("dataset_dir") or str(
+                (DATA_DIR / "JSON" / "side") if "side" in name else (DATA_DIR / "JSON")
+            )
+            self.dataset_dir_edit.setText(dataset_dir)
+        if not output_prefix:
+            output_prefix = preset_pre.get("output_prefix") or str(DATA_DIR / f"{name}_v1")
+            self.pre_output_edit.setText(output_prefix)
+        self._persist_preset(name)
+        self.log_box.clear()
+        self._run_job(
+            lambda: self._run_preprocess_job(dataset_dir, output_prefix, tags),
+            "Preprocessing...",
+        )
+
+    def _start_training(self):
+        data_prefix = self.train_data_prefix_edit.text().strip()
+        output_prefix = self.train_output_prefix_edit.text().strip()
+        tags = self._active_tags()
+        name = self.preset_cb.currentText().strip() or "traditional_bench"
+        preset = self.ml_presets.get(name, {})
+        preset_train = preset.get("train") or {}
+        if not data_prefix:
+            data_prefix = preset_train.get("data_prefix") or str(DATA_DIR / f"{name}_v1")
+            self.train_data_prefix_edit.setText(data_prefix)
+        if not output_prefix:
+            output_prefix = preset_train.get("output_prefix") or str(MODEL_DIR / f"{name}_mlp_v1")
+            self.train_output_prefix_edit.setText(output_prefix)
+        self._persist_preset(name)
+        self.log_box.clear()
+        self._run_job(
+            lambda: self._run_training_job(data_prefix, output_prefix, tags),
+            "Training...",
+        )
+
+    def _run_preprocess_job(self, dataset_dir: str, output_prefix: str, tags: Sequence[str]):
+        try:
+            preprocess_dataset(Path(dataset_dir), Path(output_prefix), tags, self.log_signal.emit)
+            return True, "Preprocess completed."
+        except Exception as exc:
+            return False, str(exc)
+
+    def _run_training_job(self, data_prefix: str, output_prefix: str, tags: Sequence[str]):
+        try:
+            train_dataset_model(
+                Path(data_prefix),
+                Path(output_prefix),
+                tags,
+                int(self.epoch_spin.value()),
+                int(self.batch_spin.value()),
+                float(self.dev_spin.value()),
+                int(self.seed_spin.value()),
+                self.log_signal.emit,
+            )
+            return True, "Training completed."
+        except Exception as exc:
+            return False, str(exc)
+
+    def _run_job(self, fn: Callable[[], Tuple[bool, str]], label: str):
+        if self._future:
+            return
+        self._set_buttons_enabled(False)
+        self.status_label.setText(label)
+        if not self._executor:
+            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = self._executor.submit(fn)
+        self._future = future
+
+        def _finish(fut):
+            QtCore.QTimer.singleShot(0, lambda: self._on_job_finished(fut))
+
+        future.add_done_callback(_finish)
+
+    def _on_job_finished(self, future: concurrent.futures.Future):
+        if future is not self._future:
+            return
+        self._future = None
+        self._set_buttons_enabled(True)
+        try:
+            ok, message = future.result()
+        except Exception as exc:
+            ok = False
+            message = str(exc)
+        self.status_label.setText(message if ok else "Failed")
+        if not ok:
+            QtWidgets.QMessageBox.critical(self, "Task failed", message)
+
+    def _set_buttons_enabled(self, enabled: bool):
+        self.preprocess_btn.setEnabled(enabled)
+        self.train_btn.setEnabled(enabled)
+        self.save_btn.setEnabled(enabled)
+        self.save_as_btn.setEnabled(enabled)
+        self.reload_btn.setEnabled(enabled)
+
+    def _append_log(self, text: str):
+        self.log_box.append(text)
+
+    def __del__(self):
+        try:
+            if self._executor:
+                self._executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 class LabelerView(QtWidgets.QWidget):
     def __init__(self):
@@ -1392,6 +2157,11 @@ class LabelerView(QtWidgets.QWidget):
         self.movement_cb.addItems(self.movements)
         self.movement_cb.currentTextChanged.connect(self._on_movement_changed)
         form.addRow("movement", self.movement_cb)
+
+        self.quality_cb = QtWidgets.QComboBox()
+        self.quality_cb.addItems(["1", "2", "3", "4", "5"])
+        self.quality_cb.setCurrentText("3")
+        form.addRow("overall_quality", self.quality_cb)
 
         meta_widget = QtWidgets.QWidget()
         meta_grid = QtWidgets.QGridLayout(meta_widget)
@@ -3072,6 +3842,7 @@ class PoseTunerView(QtWidgets.QWidget):
             concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
         self._pose_future: Optional[concurrent.futures.Future] = None
+        self._preprocess_cache: Dict[Tuple[Path, int, float], Path] = {}
         self._build_ui()
 
     def _release_entry_caps(self, clear_labels: bool = True):
@@ -3085,6 +3856,7 @@ class PoseTunerView(QtWidgets.QWidget):
                 cap.release()
         self.video_entries.clear()
         self.pose_dirty = False
+        self._clear_preprocess_cache()
         if clear_labels:
             for slot in self.video_slots:
                 label = slot.get("label")
@@ -3219,6 +3991,30 @@ class PoseTunerView(QtWidgets.QWidget):
             "Choose which MediaPipe pose model variant to run.",
         )
 
+        self.preprocess_check = QtWidgets.QCheckBox("Preprocess (faster)")
+        self.preprocess_check.setToolTip(
+            "Downscale and cap FPS before running pose to speed up heavy/full models."
+        )
+        self.preprocess_check.setChecked(True)
+        self.preprocess_check.stateChanged.connect(self._schedule_pose_rerun)
+        pre_row = QtWidgets.QHBoxLayout()
+        pre_row.addWidget(self.preprocess_check)
+        pre_row.addStretch(1)
+        self.pre_height_spin = QtWidgets.QSpinBox()
+        self.pre_height_spin.setRange(240, 2160)
+        self.pre_height_spin.setValue(720)
+        self.pre_height_spin.setSuffix(" px height")
+        self.pre_height_spin.valueChanged.connect(self._schedule_pose_rerun)
+        self.pre_fps_spin = QtWidgets.QDoubleSpinBox()
+        self.pre_fps_spin.setRange(1.0, 60.0)
+        self.pre_fps_spin.setValue(15.0)
+        self.pre_fps_spin.setSingleStep(1.0)
+        self.pre_fps_spin.setSuffix(" fps")
+        self.pre_fps_spin.valueChanged.connect(self._schedule_pose_rerun)
+        form.addRow("Preprocess", pre_row)
+        form.addRow("Target size/FPS", self.pre_height_spin)
+        form.addRow("", self.pre_fps_spin)
+
         self.det_spin = QtWidgets.QDoubleSpinBox()
         self.det_spin.setRange(0.1, 1.0)
         self.det_spin.setSingleStep(0.05)
@@ -3309,6 +4105,9 @@ class PoseTunerView(QtWidgets.QWidget):
         save_row.addWidget(save_as_btn)
 
         control_panel.addStretch(1)
+        self.pose_progress = QtWidgets.QProgressBar()
+        self.pose_progress.setVisible(False)
+        control_panel.addWidget(self.pose_progress)
 
         # Right: video grid and controls
         video_panel = QtWidgets.QVBoxLayout()
@@ -3433,6 +4232,7 @@ class PoseTunerView(QtWidgets.QWidget):
         if not videos:
             return
         self._release_entry_caps()
+        self._clear_preprocess_cache()
         for idx, path in enumerate(videos[: self.max_slots]):
             entry = self._load_single_video(path)
             if entry:
@@ -3455,9 +4255,8 @@ class PoseTunerView(QtWidgets.QWidget):
             self.play_btn.setText("Play")
             self._refresh_all_frames()
             if any(not entry.get("pose") for entry in self.video_entries):
-                self._schedule_pose_rerun(
-                    message="Pose data missing – click Re-run Pose Tracker."
-                )
+                # Kick off an initial pose run automatically so overlays appear.
+                self._rerun_pose_for_loaded_entries(auto=True)
 
     def _load_single_video(self, path: Path) -> Optional[Dict]:
         cap = cv2.VideoCapture(str(path))
@@ -3563,6 +4362,14 @@ class PoseTunerView(QtWidgets.QWidget):
         for entry in self.video_entries:
             self._render_entry(entry)
 
+    def _clear_preprocess_cache(self):
+        for tmp in self._preprocess_cache.values():
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+        self._preprocess_cache.clear()
+
     def _selected_body_parts(self) -> List[str]:
         selected = [chk.text() for chk in self.body_part_checks if chk.isChecked()]
         return selected or BODY_PART_OPTIONS.copy()
@@ -3595,6 +4402,9 @@ class PoseTunerView(QtWidgets.QWidget):
             "trk": self.trk_spin.value(),
             "ema": self.ema_spin.value(),
             "seg": self.seg_check.isChecked(),
+            "preprocess": self.preprocess_check.isChecked(),
+            "pre_height": self.pre_height_spin.value(),
+            "pre_fps": self.pre_fps_spin.value(),
         }
 
     def _schedule_pose_rerun(self, delay_ms: int = 200, message: Optional[str] = None):
@@ -3646,6 +4456,7 @@ class PoseTunerView(QtWidgets.QWidget):
         if entry not in self.video_entries:
             return
         entry_idx = self.video_entries.index(entry)
+        total_frames = entry.get("frame_count", 0)
         self.global_rerun_btn.setEnabled(False)
         self._pose_job_active = True
         rotation = entry.get("rotation_override")
@@ -3655,74 +4466,82 @@ class PoseTunerView(QtWidgets.QWidget):
             f"Running pose tracker for {entry['path'].name}..."
         )
 
-        if not self._pose_executor:
-            self._pose_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        source_path = entry["path"]
+        source_fps = entry["fps"]
+        temp_path: Optional[Path] = None
+        if settings.get("preprocess"):
+            try:
+                temp_path, source_fps = preprocess_video_for_pose(
+                    source_path,
+                    int(settings.get("pre_height", 720)),
+                    float(settings.get("pre_fps", 15.0)),
+                )
+                source_path = temp_path
+            except Exception as exc:
+                self.pose_dirty = True
+                self.status_label.setText("Preprocess failed")
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Preprocess failed",
+                    f"{entry['path'].name}: {exc}",
+                )
+                self._pose_job_active = False
+                self.global_rerun_btn.setEnabled(True)
+                return
 
-        future = self._pose_executor.submit(
-            PoseTunerView._pose_worker_task,
-            entry["path"],
-            entry["fps"],
-            settings,
-            model_path,
-            rotation,
+        progress = QtWidgets.QProgressDialog(
+            "Running pose tracker...",
+            "Cancel",
+            0,
+            max(total_frames, 1),
+            self,
         )
-        self._pose_future = future
+        progress.setWindowTitle("Pose Tracker")
+        progress.setWindowModality(QtCore.Qt.ApplicationModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
 
-        def _schedule_finished(fut, idx=entry_idx):
-            QtCore.QTimer.singleShot(
-                0, lambda: self._on_pose_worker_finished(idx, fut)
-            )
+        def progress_cb(done: int, total: int) -> bool:
+            progress.setMaximum(max(total, 1))
+            progress.setValue(done)
+            QtWidgets.QApplication.processEvents()
+            return not progress.wasCanceled()
 
-        future.add_done_callback(_schedule_finished)
-
-    def _on_pose_worker_finished(self, entry_idx: int, future):
-        if self._pose_future is not future:
-            return
-        self._pose_future = None
-        self._pose_job_active = False
-        self.global_rerun_btn.setEnabled(True)
+        pose_frames: Optional[List[Dict]] = None
         try:
-            success, pose_frames, error = future.result()
+            pose_frames = run_pose_landmarks_on_video(
+                source_path,
+                source_fps,
+                settings,
+                model_path,
+                progress_cb=progress_cb,
+                rotation=rotation,
+            )
         except Exception as exc:
-            success = False
-            pose_frames = None
-            error = str(exc)
+            self.pose_dirty = True
+            self.status_label.setText("Pose refresh failed")
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Pose tracker failed",
+                f"{entry['path'].name}: {exc}",
+            )
+        finally:
+            progress.close()
+            self._pose_job_active = False
+            self.global_rerun_btn.setEnabled(True)
+
+        if not pose_frames:
+            return
+
         if not (0 <= entry_idx < len(self.video_entries)):
             return
         entry = self.video_entries[entry_idx]
-        if not success or not pose_frames:
-            self.pose_dirty = True
-            self.status_label.setText("Pose refresh failed")
-            if error:
-                QtWidgets.QMessageBox.critical(
-                    self, "Pose tracker failed", f"{entry['path'].name}: {error}"
-                )
-            return
         entry["pose"] = pose_frames
         self.pose_dirty = False
         self.status_label.setText("Pose overlays refreshed.")
         self._save_entry_dataset(entry, pose_frames)
         self._render_entry(entry)
-
-    @staticmethod
-    def _pose_worker_task(
-        video_path: Path,
-        fps: float,
-        settings: Dict,
-        model_path: Path,
-        rotation: int,
-    ):
-        try:
-            pose_frames = run_pose_landmarks_on_video(
-                video_path,
-                fps,
-                settings,
-                model_path,
-                rotation=rotation,
-            )
-            return True, pose_frames, ""
-        except Exception as exc:
-            return False, None, str(exc)
 
     def _save_entry_dataset(self, entry: Dict, pose_frames: List[Dict]):
         json_path: Path = entry.get("json_path")
@@ -3767,6 +4586,9 @@ class PoseTunerView(QtWidgets.QWidget):
     def _persist_settings(self, movement: str):
         settings = {
             "model": self.model_cb.currentText() or "full",
+            "preprocess": self.preprocess_check.isChecked(),
+            "pre_height": self.pre_height_spin.value(),
+            "pre_fps": self.pre_fps_spin.value(),
             "det": self.det_spin.value(),
             "prs": self.prs_spin.value(),
             "trk": self.trk_spin.value(),
@@ -3795,6 +4617,9 @@ class PoseTunerView(QtWidgets.QWidget):
             self.ema_spin.blockSignals(True)
             self.model_cb.blockSignals(True)
             self.seg_check.blockSignals(True)
+            self.preprocess_check.blockSignals(True)
+            self.pre_height_spin.blockSignals(True)
+            self.pre_fps_spin.blockSignals(True)
 
             self.det_spin.setValue(settings.get("det", 0.5))
             self.prs_spin.setValue(settings.get("prs", 0.7))
@@ -3806,6 +4631,9 @@ class PoseTunerView(QtWidgets.QWidget):
                 idx = 0
             self.model_cb.setCurrentIndex(idx)
             self.seg_check.setChecked(settings.get("seg", False))
+            self.preprocess_check.setChecked(settings.get("preprocess", True))
+            self.pre_height_spin.setValue(int(settings.get("pre_height", 720)))
+            self.pre_fps_spin.setValue(float(settings.get("pre_fps", 15.0)))
         finally:
             self.det_spin.blockSignals(False)
             self.prs_spin.blockSignals(False)
@@ -3813,6 +4641,9 @@ class PoseTunerView(QtWidgets.QWidget):
             self.ema_spin.blockSignals(False)
             self.model_cb.blockSignals(False)
             self.seg_check.blockSignals(False)
+            self.preprocess_check.blockSignals(False)
+            self.pre_height_spin.blockSignals(False)
+            self.pre_fps_spin.blockSignals(False)
             self._loading_pose_settings = False
         parts = set(settings.get("body_parts") or BODY_PART_OPTIONS)
         for chk in self.body_part_checks:
@@ -3845,10 +4676,12 @@ class UnifiedToolWindow(QtWidgets.QMainWindow):
         self.labeler_page = LabelerView()
         self.cutting_page = VideoCutView()
         self.pose_page = PoseTunerView()
+        self.training_page = DatasetTrainerView()
         self.admin_page.set_home_callback(self.show_home)
         self.labeler_page.set_home_callback(self.show_home)
         self.cutting_page.set_home_callback(self.show_home)
         self.pose_page.set_home_callback(self.show_home)
+        self.training_page.set_home_callback(self.show_home)
 
         for page in [
             self.home_page,
@@ -3856,6 +4689,7 @@ class UnifiedToolWindow(QtWidgets.QMainWindow):
             self.labeler_page,
             self.cutting_page,
             self.pose_page,
+            self.training_page,
         ]:
             self.stack.addWidget(page)
 
@@ -3863,9 +4697,11 @@ class UnifiedToolWindow(QtWidgets.QMainWindow):
         self.home_page.requested_labeling.connect(self.start_labeling_workflow)
         self.home_page.requested_cutting.connect(self.start_cutting_workflow)
         self.home_page.requested_pose.connect(self.start_pose_workflow)
+        self.home_page.requested_training.connect(self.start_training_workflow)
 
         self.admin_page.config_saved.connect(self.labeler_page.refresh_label_options)
         self.admin_page.config_saved.connect(self._reload_pose_settings)
+        self.admin_page.config_saved.connect(self.training_page.reload_presets)
 
         self.show_home()
 
@@ -3908,6 +4744,10 @@ class UnifiedToolWindow(QtWidgets.QMainWindow):
             return
         self.pose_page.load_pose_inputs(videos, None)
         self.show_page(self.pose_page)
+
+    def start_training_workflow(self):
+        self.training_page.reload_presets()
+        self.show_page(self.training_page)
 
     def _reload_pose_settings(self):
         self.pose_page.refresh_movements()

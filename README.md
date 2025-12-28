@@ -41,7 +41,26 @@ All helper scripts now live inside the single-window PySide6 app at `Dev_tools/u
 ./scripts/run_unified_tool.sh
 ```
 
-The window exposes the labeler (issue tagging, metadata forms, per-frame annotations), the automatic clipper, and the pose-tuner grid. Configuration lives in `Dev_tools/label_config.json`; edit it from inside the tool or by hand if you need to version-control label changes.
+The window exposes the labeler (issue tagging, metadata forms, per-frame annotations), the automatic clipper, the pose-tuner grid, and a Dataset + Model tab for preprocessing JSONs and training the bench MLP with saved presets. Configuration lives in `Dev_tools/label_config.json`; edit it from inside the tool or by hand if you need to version-control label changes.
+
+### Dataset + model scripts
+
+Two helper scripts in `Dev_tools/` round out the workflow (the same tasks are available inside the unified tool’s Dataset + Model tab):
+
+- `bench_dataset_tool.py --mode preprocess` – converts a folder of dataset JSONs into NumPy tensors for training. Run it and follow the dialogs (or pass `--dataset_dir`/`--output_prefix`). It writes `<prefix>_X.npy`, `<prefix>_y.npy`, and `<prefix>_meta.json`.
+- `bench_dataset_tool.py --mode train` – trains a tiny multi-label MLP using the preprocessed tensors. Example:
+
+  ```bash
+  python Dev_tools/bench_dataset_tool.py --mode train \
+    --data_prefix bench_v1 \
+    --output_prefix bench_mlp_v1 \
+    --epochs 200 \
+    --batch_size 32
+  ```
+
+  It prints per-tag precision/recall/F1, then saves `<prefix>_model.pt`, `<prefix>_scaler.npz`, and `<prefix>_train_meta.json`. Legacy single-purpose scripts now live under `Dev_tools/archive/`.
+
+Assets/layout: dataset JSONs and tensors live in `Dev_tools/data/`, and the pose/bench model artifacts live in `Dev_tools/models/`.
 
 ### Archived utilities
 

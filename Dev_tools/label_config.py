@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Dict, List
 
 LABEL_CONFIG_PATH = Path(__file__).resolve().parent / "label_config.json"
+DEV_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = DEV_ROOT / "data"
+DEFAULT_MODEL_DIR = DEV_ROOT / "models"
 
 DEFAULT_TAGS = [
     "no_major_issues",
@@ -15,14 +18,48 @@ DEFAULT_TAGS = [
     "hands_too_narrow",
     "grip_uneven",
     "barbell_tilted",
-    "lockout_incomplete",
     "bar_depth_insufficient",
+    "incomplete_lockout",
 ]
+
+DEFAULT_ML_PRESETS = {
+    "traditional_bench": {
+        "preprocess": {
+            "dataset_dir": str(DEFAULT_DATA_DIR / "JSON"),
+            "output_prefix": str(DEFAULT_DATA_DIR / "traditional_bench_v1"),
+        },
+        "train": {
+            "data_prefix": str(DEFAULT_DATA_DIR / "traditional_bench_v1"),
+            "output_prefix": str(DEFAULT_MODEL_DIR / "traditional_bench_mlp_v1"),
+            "epochs": 200,
+            "batch_size": 32,
+            "dev_fraction": 0.2,
+            "seed": 42,
+        },
+        "tags": DEFAULT_TAGS,
+    },
+    "traditional_bench_side": {
+        "preprocess": {
+            "dataset_dir": str(DEFAULT_DATA_DIR / "JSON" / "side"),
+            "output_prefix": str(DEFAULT_DATA_DIR / "traditional_bench_side_v1"),
+        },
+        "train": {
+            "data_prefix": str(DEFAULT_DATA_DIR / "traditional_bench_side_v1"),
+            "output_prefix": str(DEFAULT_MODEL_DIR / "traditional_bench_side_mlp_v1"),
+            "epochs": 200,
+            "batch_size": 32,
+            "dev_fraction": 0.2,
+            "seed": 42,
+        },
+        "tags": DEFAULT_TAGS,
+    },
+}
 
 EMPTY_CONFIG = {
     "movements": [],
     "tags": DEFAULT_TAGS,
     "movement_settings": {},
+    "ml_presets": DEFAULT_ML_PRESETS,
 }
 
 
@@ -71,6 +108,42 @@ def _sanitize_movement_settings(values) -> Dict[str, Dict]:
     return clean
 
 
+def _sanitize_ml_presets(values, default_tags) -> Dict[str, Dict]:
+    if not isinstance(values, dict):
+        values = {}
+    clean: Dict[str, Dict] = {}
+    for name, preset in values.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if not isinstance(preset, dict):
+            continue
+        preprocess = preset.get("preprocess") or {}
+        train = preset.get("train") or {}
+        tags = preset.get("tags")
+        clean[name] = {
+            "preprocess": {
+                "dataset_dir": str(preprocess.get("dataset_dir", "")),
+                "output_prefix": str(preprocess.get("output_prefix", "")),
+            },
+            "train": {
+                "data_prefix": str(train.get("data_prefix", "")),
+                "output_prefix": str(train.get("output_prefix", "")),
+                "epochs": int(train.get("epochs", 200)),
+                "batch_size": int(train.get("batch_size", 32)),
+                "dev_fraction": float(train.get("dev_fraction", 0.2)),
+                "seed": int(train.get("seed", 42)),
+            },
+            "tags": _sanitize_list(tags) or default_tags,
+        }
+    if not clean:
+        fallback = json.loads(json.dumps(DEFAULT_ML_PRESETS))
+        for key in fallback:
+            fallback[key]["tags"] = default_tags
+        clean = fallback
+    return clean
+
+
 def load_label_config() -> Dict[str, List[str]]:
     """Return dict with config stored entirely in JSON."""
     ensure_config_file()
@@ -85,15 +158,23 @@ def load_label_config() -> Dict[str, List[str]]:
         "movements": _sanitize_list(data.get("movements")),
         "tags": tags,
         "movement_settings": _sanitize_movement_settings(data.get("movement_settings")),
+        "ml_presets": _sanitize_ml_presets(data.get("ml_presets"), tags),
     }
 
 
 def save_label_config(cfg: Dict[str, List[str]]) -> None:
     """Persist config (after sanitizing)."""
+    ensure_config_file()
+    current = load_label_config()
     clean = {
-        "movements": _sanitize_list(cfg.get("movements")),
-        "tags": _sanitize_list(cfg.get("tags") or cfg.get("issues")),
-        "movement_settings": _sanitize_movement_settings(cfg.get("movement_settings")),
+        "movements": _sanitize_list(cfg.get("movements", current.get("movements"))),
+        "tags": _sanitize_list(cfg.get("tags") or cfg.get("issues") or current.get("tags")),
+        "movement_settings": _sanitize_movement_settings(
+            cfg.get("movement_settings", current.get("movement_settings"))
+        ),
+        "ml_presets": _sanitize_ml_presets(
+            cfg.get("ml_presets", current.get("ml_presets")), current.get("tags")
+        ),
     }
     LABEL_CONFIG_PATH.write_text(json.dumps(clean, indent=2))
 

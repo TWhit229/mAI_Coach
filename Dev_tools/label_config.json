@@ -49,5 +49,53 @@
         "shoulders"
       ]
     }
+  },
+  "ml_presets": {
+    "traditional_bench": {
+      "preprocess": {
+        "dataset_dir": "/Users/whitney/Downloads/Batch 1/JSON",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_v1"
+      },
+      "train": {
+        "data_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_v1",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/models/traditional_bench_mlp_v1",
+        "epochs": 200,
+        "batch_size": 32,
+        "dev_fraction": 0.2,
+        "seed": 42
+      },
+      "tags": [
+        "no_major_issues",
+        "hands_too_wide",
+        "hands_too_narrow",
+        "grip_uneven",
+        "barbell_tilted",
+        "lockout_incomplete",
+        "bar_depth_insufficient"
+      ]
+    },
+    "traditional_bench_side": {
+      "preprocess": {
+        "dataset_dir": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/JSON/side",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_side_v1"
+      },
+      "train": {
+        "data_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_side_v1",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/models/traditional_bench_side_mlp_v1",
+        "epochs": 200,
+        "batch_size": 32,
+        "dev_fraction": 0.2,
+        "seed": 42
+      },
+      "tags": [
+        "no_major_issues",
+        "hands_too_wide",
+        "hands_too_narrow",
+        "grip_uneven",
+        "barbell_tilted",
+        "lockout_incomplete",
+        "bar_depth_insufficient"
+      ]
+    }
   }
 }
