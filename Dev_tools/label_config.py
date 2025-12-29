@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
-LABEL_CONFIG_PATH = Path(__file__).resolve().parent / "label_config.json"
-DEV_ROOT = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    DEV_ROOT = Path.home() / "Documents" / "mAI_Coach" / "Dev_tools"
+else:
+    DEV_ROOT = Path(__file__).resolve().parent
+
+LABEL_CONFIG_PATH = DEV_ROOT / "label_config.json"
 DEFAULT_DATA_DIR = DEV_ROOT / "data"
 DEFAULT_MODEL_DIR = DEV_ROOT / "models"
 
@@ -21,6 +26,8 @@ DEFAULT_TAGS = [
     "bar_depth_insufficient",
     "incomplete_lockout",
 ]
+
+DEFAULT_OK_TAG = "no_major_issues"
 
 DEFAULT_ML_PRESETS = {
     "traditional_bench": {
@@ -184,4 +191,95 @@ __all__ = [
     "ensure_config_file",
     "load_label_config",
     "save_label_config",
+    "load_label_options",
+    "load_ml_presets",
+    "save_ml_presets",
+    "default_movement_settings",
+    "DEFAULT_TAGS",
+    "DEFAULT_OK_TAG",
+    "MODEL_VARIANTS",
+    "BODY_PART_OPTIONS",
+    "BENCH_DEFAULT_PARTS",
+    "GRIP_WIDE_THRESHOLD",
+    "GRIP_NARROW_THRESHOLD",
+    "GRIP_UNEVEN_THRESHOLD",
+    "BAR_TILT_THRESHOLD_DEG",
 ]
+
+
+MODEL_VARIANTS = ["lite", "full", "heavy"]
+BODY_PART_OPTIONS = [
+    "hands",
+    "wrists",
+    "forearms",
+    "upper_arms",
+    "shoulders",
+    "torso",
+    "hips",
+    "legs",
+    "full_body",
+]
+BENCH_DEFAULT_PARTS = ["hands", "forearms", "upper_arms", "shoulders"]
+
+# Metric thresholds
+GRIP_WIDE_THRESHOLD = 2.1
+GRIP_NARROW_THRESHOLD = 1.2
+GRIP_UNEVEN_THRESHOLD = 0.10
+BAR_TILT_THRESHOLD_DEG = 5.0
+
+
+def default_movement_settings(name: str = "") -> Dict:
+    lower = name.lower()
+    body_parts = (
+        BENCH_DEFAULT_PARTS.copy() if "bench" in lower else BODY_PART_OPTIONS.copy()
+    )
+    return {
+        "model": "full",
+        "preprocess": True,
+        "pre_height": 720,
+        "pre_fps": 15.0,
+        "det": 0.5,
+        "prs": 0.7,
+        "trk": 0.7,
+        "ema": 0.25,
+        "seg": False,
+        "grip_wide_threshold": GRIP_WIDE_THRESHOLD,
+        "grip_narrow_threshold": GRIP_NARROW_THRESHOLD,
+        "grip_uneven_threshold": GRIP_UNEVEN_THRESHOLD,
+        "bar_tilt_threshold": BAR_TILT_THRESHOLD_DEG,
+        "body_parts": body_parts,
+    }
+
+
+def load_label_options():
+    """Load movements, tags, and per-movement settings from config."""
+    cfg = load_label_config()
+    movements = cfg.get("movements") or []
+    tags = cfg.get("tags") or []
+    raw_settings = cfg.get("movement_settings") or {}
+    merged_settings: Dict[str, Dict] = {}
+    for name in movements:
+        defaults = default_movement_settings(name)
+        stored = raw_settings.get(name) or {}
+        merged = defaults.copy()
+        merged.update(stored)
+        merged_settings[name] = merged
+    return movements, tags, merged_settings
+
+
+def load_ml_presets() -> Tuple[Dict[str, Dict], List[str], List[str]]:
+    """Load ML presets, tags, and movements from config."""
+    cfg = load_label_config()
+    return (
+        cfg.get("ml_presets") or {},
+        cfg.get("tags") or [],
+        cfg.get("movements") or [],
+    )
+
+
+def save_ml_presets(presets: Dict[str, Dict]) -> None:
+    """Update only the ML presets in the config."""
+    ensure_config_file()
+    cfg = load_label_config()
+    clean_presets = _sanitize_ml_presets(presets, cfg.get("tags") or DEFAULT_TAGS)
+    save_label_config({"ml_presets": clean_presets})

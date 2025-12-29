@@ -97,7 +97,6 @@ def extract_example(rep):
         shoulder_width = _dist(ls, rs)
         if shoulder_width <= 1e-6:
             continue
-        chest_x = 0.5 * (ls[0] + rs[0])
         chest_y = 0.5 * (ls[1] + rs[1])
         lw_y_norm = (lw[1] - chest_y) / shoulder_width
         rw_y_norm = (rw[1] - chest_y) / shoulder_width

@@ -3,3 +3,11 @@ venv/
 .DS_Store
 __pycache__/
 
+
+Pods/
+
+# PyInstaller build artifacts
+Dev_tools/build/
+Dev_tools/dist/
+*.spec
+
