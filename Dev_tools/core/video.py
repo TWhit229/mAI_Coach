@@ -1,6 +1,7 @@
 """Video processing and MediaPipe helpers."""
 
 import os
+import sys
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,7 +33,6 @@ POSE_MODEL_PATHS = {
 }
 
 
-import sys
 
 
 def _pose_model_path(variant: str = "full") -> Path:
