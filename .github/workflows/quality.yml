@@ -58,10 +58,13 @@ jobs:
     - name: Build App
       run: |
         cd "App Core"
+        # Get first available iPhone simulator
+        SIMULATOR=$(xcrun simctl list devices available | grep iPhone | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+        echo "Using simulator: $SIMULATOR"
         set -o pipefail && xcodebuild build \
           -workspace "mAICoach.xcworkspace" \
           -scheme "mAICoach" \
-          -destination "platform=iOS Simulator,OS=latest,name=iPhone 16" \
+          -destination "platform=iOS Simulator,id=$SIMULATOR" \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
