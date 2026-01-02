@@ -22,7 +22,7 @@ jobs:
     - name: Install System Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgl1-mesa-glx libegl1-mesa libxrandr2 libxrandr2 libxss1 libxcursor1 libxcomposite1 libasound2 libxi6 libxtst6
+        sudo apt-get install -y libgl1 libegl1 libxrandr2 libxss1 libxcursor1 libxcomposite1 libasound2t64 libxi6 libxtst6 xvfb
 
     - name: Install Dependencies
       run: |
@@ -52,13 +52,16 @@ jobs:
         cd "App Core"
         pod install
         
+    - name: List Available Simulators
+      run: xcrun simctl list devices available
+        
     - name: Build App
       run: |
         cd "App Core"
         set -o pipefail && xcodebuild build \
           -workspace "mAICoach.xcworkspace" \
           -scheme "mAICoach" \
-          -destination "platform=iOS Simulator,name=iPhone 15" \
+          -destination "platform=iOS Simulator,OS=latest,name=iPhone 16" \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
