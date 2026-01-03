@@ -144,27 +144,31 @@ final class BenchInferenceEngine: ObservableObject {
             repCount += 1
             lastTags = selected
             
-            // Construct feedback using varied coaching phrases
-            var feedback = "Rep \(repCount)."
+            // Play rep count audio
+            AudioCoach.shared.playRep(repCount)
             
             if selected.isEmpty {
                 lastPredictionText = "Rep \(repCount): no major issues"
                 // Give positive reinforcement occasionally (every 2-3 reps)
                 if repCount % 2 == 0 || repCount % 3 == 0 {
-                    feedback += " \(CoachingPhrases.randomPositive())"
+                    // Small delay before positive feedback
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        AudioCoach.shared.playPositive()
+                    }
                 }
             } else {
                 let issues = selected.joined(separator: ", ")
                 lastPredictionText = "Rep \(repCount): " + issues
-                // Speak coaching feedback for the most prominent issue
+                // Play coaching feedback for the most prominent issue
                 if let firstIssue = selected.first {
-                    feedback += " \(CoachingPhrases.phrase(for: firstIssue))"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        AudioCoach.shared.playFormFeedback(for: firstIssue)
+                    }
                 }
             }
-            
-            speak(feedback)
         }
     }
+
     
     /// Preferred voice identifier - tries to use enhanced Samantha voice if available
     private var preferredVoice: AVSpeechSynthesisVoice? {
@@ -204,8 +208,9 @@ final class BenchInferenceEngine: ObservableObject {
         repCount = 0
         lastTags = []
         lastPredictionText = "Ready for set"
-        speak("Session reset. Get ready.")
+        AudioCoach.shared.playSessionReset()
     }
+
 }
 
 // MARK: - Rep detection (Bench Press: Start High -> Lower (val increases) -> Push (val decreases) -> End High)
