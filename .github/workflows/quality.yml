@@ -1,0 +1,70 @@
+name: Quality Checks
+
+on:
+  push:
+    branches: [ "main", "unified-tool-v2" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  python-tests:
+    name: Python Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1 libegl1 libxrandr2 libxss1 libxcursor1 libxcomposite1 libasound2t64 libxi6 libxtst6 xvfb
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r Dev_tools/requirements.txt
+        
+    - name: Lint with Ruff
+      run: |
+        ruff check Dev_tools
+        
+    - name: Run Unit Tests
+      run: |
+        xvfb-run pytest Dev_tools/tests
+
+  ios-build:
+    name: iOS Build Verification
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Install CocoaPods
+      run: sudo gem install cocoapods
+      
+    - name: Install Pods
+      run: |
+        cd "App Core"
+        pod install
+        
+    - name: List Available Simulators
+      run: xcrun simctl list devices available | grep iPhone | head -5
+        
+    - name: Build App
+      run: |
+        cd "App Core"
+        set -o pipefail && xcodebuild build \
+          -workspace "mAICoach.xcworkspace" \
+          -scheme "mAICoach" \
+          -destination "generic/platform=iOS Simulator" \
+          -allowProvisioningUpdates \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          ONLY_ACTIVE_ARCH=NO \
+          | xcpretty

@@ -1,0 +1,101 @@
+{
+  "movements": [
+    "traditional_bench",
+    "traditional_bench_side"
+  ],
+  "tags": [
+    "no_major_issues",
+    "hands_too_wide",
+    "hands_too_narrow",
+    "grip_uneven",
+    "barbell_tilted",
+    "lockout_incomplete",
+    "bar_depth_insufficient"
+  ],
+  "movement_settings": {
+    "traditional_bench": {
+      "model": "full",
+      "det": 0.6000000000000001,
+      "prs": 0.7,
+      "trk": 0.7,
+      "ema": 0.8000000000000002,
+      "seg": false,
+      "grip_wide_threshold": 2.7999999999999976,
+      "grip_narrow_threshold": 2.0000000000000004,
+      "grip_uneven_threshold": 0.1,
+      "bar_tilt_threshold": 5.0,
+      "body_parts": [
+        "hands",
+        "forearms",
+        "upper_arms",
+        "shoulders"
+      ]
+    },
+    "traditional_bench_side": {
+      "model": "full",
+      "det": 0.5,
+      "prs": 0.7,
+      "trk": 0.7,
+      "ema": 0.25,
+      "seg": false,
+      "grip_wide_threshold": 2.1,
+      "grip_narrow_threshold": 1.2,
+      "grip_uneven_threshold": 0.1,
+      "bar_tilt_threshold": 5.0,
+      "body_parts": [
+        "hands",
+        "forearms",
+        "upper_arms",
+        "shoulders"
+      ]
+    }
+  },
+  "ml_presets": {
+    "traditional_bench": {
+      "preprocess": {
+        "dataset_dir": "/Users/whitney/Downloads/Batch 1/JSON",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_v1"
+      },
+      "train": {
+        "data_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_v1",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/models/traditional_bench_mlp_v1",
+        "epochs": 200,
+        "batch_size": 32,
+        "dev_fraction": 0.2,
+        "seed": 42
+      },
+      "tags": [
+        "no_major_issues",
+        "hands_too_wide",
+        "hands_too_narrow",
+        "grip_uneven",
+        "barbell_tilted",
+        "lockout_incomplete",
+        "bar_depth_insufficient"
+      ]
+    },
+    "traditional_bench_side": {
+      "preprocess": {
+        "dataset_dir": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/JSON/side",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_side_v1"
+      },
+      "train": {
+        "data_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/data/traditional_bench_side_v1",
+        "output_prefix": "/Users/whitney/Documents/mAI_Coach/Dev_tools/models/traditional_bench_side_mlp_v1",
+        "epochs": 200,
+        "batch_size": 32,
+        "dev_fraction": 0.2,
+        "seed": 42
+      },
+      "tags": [
+        "no_major_issues",
+        "hands_too_wide",
+        "hands_too_narrow",
+        "grip_uneven",
+        "barbell_tilted",
+        "lockout_incomplete",
+        "bar_depth_insufficient"
+      ]
+    }
+  }
+}

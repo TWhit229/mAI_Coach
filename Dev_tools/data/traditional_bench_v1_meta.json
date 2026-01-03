@@ -1,0 +1,28 @@
+{
+  "feature_names": [
+    "load_lbs",
+    "grip_ratio_median",
+    "grip_ratio_range",
+    "grip_uneven_median",
+    "grip_uneven_norm",
+    "bar_tilt_median_deg",
+    "bar_tilt_deg_max",
+    "tracking_bad_ratio",
+    "tracking_quality",
+    "wrist_y_min",
+    "wrist_y_max",
+    "wrist_y_range"
+  ],
+  "tags": [
+    "no_major_issues",
+    "hands_too_wide",
+    "hands_too_narrow",
+    "grip_uneven",
+    "barbell_tilted",
+    "lockout_incomplete",
+    "bar_depth_insufficient"
+  ],
+  "num_examples": 77,
+  "num_features": 12,
+  "num_tags": 7
+}
