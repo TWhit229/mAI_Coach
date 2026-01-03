@@ -1,0 +1,2 @@
+# Root requirements file - includes Dev_tools dependencies
+-r Dev_tools/requirements.txt
