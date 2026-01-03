@@ -29,7 +29,9 @@ final class PoseLandmarkerService: NSObject, ObservableObject {
         super.init()
         do {
             guard let path = Bundle.main.path(forResource: "pose_landmarker_heavy", ofType: "task") else {
-                statusText = "Model not found"
+                Task { @MainActor in
+                    self.statusText = "Model not found"
+                }
                 return
             }
 
@@ -46,11 +48,17 @@ final class PoseLandmarkerService: NSObject, ObservableObject {
             options.poseLandmarkerLiveStreamDelegate = self
 
             landmarker = try PoseLandmarker(options: options)
-            statusText = "Ready"
+            Task { @MainActor in
+                self.statusText = "Ready"
+            }
         } catch {
-            statusText = "Init error: \(error.localizedDescription)"
+            let errorDesc = error.localizedDescription
+            Task { @MainActor in
+                self.statusText = "Init error: \(errorDesc)"
+            }
         }
     }
+
 
     /// Feed frames from the camera (CGImagePropertyOrientation in; convert to UIImage.Orientation for MPImage).
     func process(sampleBuffer: CMSampleBuffer, orientation cgOrientation: CGImagePropertyOrientation) {
