@@ -18,12 +18,32 @@ final class PoseLandmarkerService: NSObject, ObservableObject {
         let landmarks: [Landmark]
     }
 
+    /// Tracking quality states for UI feedback
+    enum TrackingState: String {
+        case ready = "Ready"
+        case tracking = "Tracking"
+        case noPersonBrief = "Move into frame"
+        case noPersonPersistent = "Check camera angle"
+        case poorVisibility = "Poor lighting"
+        case error = "Error"
+    }
+
     @MainActor @Published var landmarks: [Landmark] = []
     @MainActor @Published var lastFrame: PoseFrame?
     @MainActor @Published var statusText: String = "Starting…"
+    @MainActor @Published var trackingState: TrackingState = .ready
 
     private var landmarker: PoseLandmarker?
     private var lastTimestampMs: Int64 = 0
+    
+    // MARK: - Failure Tracking
+    /// Count of consecutive frames with no person detected
+    private var noPersonFrameCount: Int = 0
+    /// Threshold for brief "no person" warning (at 15fps, 30 frames ≈ 2 seconds)
+    private let noPersonBriefThreshold: Int = 30
+    /// Threshold for persistent "no person" warning (at 15fps, 60 frames ≈ 4 seconds)
+    private let noPersonPersistentThreshold: Int = 60
+
 
     override init() {
         super.init()
@@ -132,18 +152,34 @@ extension PoseLandmarkerService: PoseLandmarkerLiveStreamDelegate {
         if let error {
             Task { @MainActor in
                 self.statusText = "Error: \(error.localizedDescription)"
+                self.trackingState = .error
                 self.landmarks = []
             }
             return
         }
 
         guard let result, let first = result.landmarks.first else {
+            // No person detected - increment failure counter
+            noPersonFrameCount += 1
+            
             Task { @MainActor in
-                self.statusText = "No person"
+                if self.noPersonFrameCount >= self.noPersonPersistentThreshold {
+                    self.statusText = "Check camera angle"
+                    self.trackingState = .noPersonPersistent
+                } else if self.noPersonFrameCount >= self.noPersonBriefThreshold {
+                    self.statusText = "Move into frame"
+                    self.trackingState = .noPersonBrief
+                } else {
+                    self.statusText = "Searching..."
+                    self.trackingState = .noPersonBrief
+                }
                 self.landmarks = []
             }
             return
         }
+        
+        // Person detected - reset failure counter
+        noPersonFrameCount = 0
 
         // Map normalized landmarks (x,y in 0..1). visibility is NSNumber? in this SDK.
         let mapped: [Landmark] = first.map { lm in
@@ -154,12 +190,25 @@ extension PoseLandmarkerService: PoseLandmarkerLiveStreamDelegate {
                 vis: lm.visibility?.floatValue ?? 0
             )
         }
+        
+        // Check for poor visibility on key landmarks (shoulders, wrists)
+        let keyLandmarkIndices = [11, 12, 15, 16]  // L/R shoulder, L/R wrist
+        let avgVisibility = keyLandmarkIndices
+            .compactMap { i in i < mapped.count ? mapped[i].vis : nil }
+            .reduce(0, +) / Float(keyLandmarkIndices.count)
 
         Task { @MainActor in
-            self.statusText = "Tracking"
+            if avgVisibility < 0.5 {
+                self.statusText = "Poor visibility"
+                self.trackingState = .poorVisibility
+            } else {
+                self.statusText = "Tracking"
+                self.trackingState = .tracking
+            }
             let smoothed = self.applySmoothing(to: mapped)
             self.landmarks = smoothed
             self.lastFrame = PoseFrame(timestampMs: Int64(timestampInMilliseconds), landmarks: smoothed)
         }
     }
 }
+

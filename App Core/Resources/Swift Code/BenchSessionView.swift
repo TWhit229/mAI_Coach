@@ -18,6 +18,33 @@ struct BenchSessionView: View {
     @State private var demoPlayer: AVPlayer?
     @StateObject private var demoPipeline = DemoPlayerPipeline()
     @State private var showDevData = false
+    
+    // MARK: - Tracking State Colors
+    private var trackingStateColor: Color {
+        switch pose.trackingState {
+        case .ready, .tracking:
+            return .green
+        case .noPersonBrief:
+            return .yellow
+        case .noPersonPersistent, .poorVisibility:
+            return .orange
+        case .error:
+            return .red
+        }
+    }
+    
+    private var trackingStateBackground: some ShapeStyle {
+        switch pose.trackingState {
+        case .tracking:
+            return AnyShapeStyle(.ultraThinMaterial)
+        case .noPersonBrief, .noPersonPersistent, .poorVisibility:
+            return AnyShapeStyle(Color.black.opacity(0.7))
+        case .error:
+            return AnyShapeStyle(Color.red.opacity(0.3))
+        case .ready:
+            return AnyShapeStyle(.ultraThinMaterial)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -129,10 +156,16 @@ struct BenchSessionView: View {
                 ZStack(alignment: .bottom) {
                     // Center: Tracking & Prediction
                     VStack(spacing: 8) {
-                        Text(pose.statusText)
-                            .font(.subheadline.bold()) 
-                            .padding(8)
-                            .background(.ultraThinMaterial, in: Capsule())
+                        // Color-coded status based on tracking quality
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(trackingStateColor)
+                                .frame(width: 10, height: 10)
+                            Text(pose.statusText)
+                                .font(.subheadline.bold())
+                        }
+                        .padding(8)
+                        .background(trackingStateBackground, in: Capsule())
                         
                         Text(inference.lastPredictionText)
                             .font(.headline)
@@ -141,6 +174,7 @@ struct BenchSessionView: View {
                             .background(.ultraThinMaterial, in: Capsule())
                     }
                     .padding(.horizontal, 40)
+
                     
                     // Bottom Left: Dev Data Display
                     if showDevData {
