@@ -18,6 +18,37 @@ struct BenchSessionView: View {
     @State private var demoPlayer: AVPlayer?
     @StateObject private var demoPipeline = DemoPlayerPipeline()
     @State private var showDevData = false
+    
+    /// Once true, the calibration overlay is hidden for the rest of the session
+    @State private var calibrationDismissed = false
+
+    
+    // MARK: - Tracking State Colors
+    private var trackingStateColor: Color {
+        switch pose.trackingState {
+        case .ready, .tracking:
+            return .green
+        case .noPersonBrief:
+            return .yellow
+        case .noPersonPersistent, .poorVisibility:
+            return .orange
+        case .error:
+            return .red
+        }
+    }
+    
+    private var trackingStateBackground: some ShapeStyle {
+        switch pose.trackingState {
+        case .tracking:
+            return AnyShapeStyle(.ultraThinMaterial)
+        case .noPersonBrief, .noPersonPersistent, .poorVisibility:
+            return AnyShapeStyle(Color.black.opacity(0.7))
+        case .error:
+            return AnyShapeStyle(Color.red.opacity(0.3))
+        case .ready:
+            return AnyShapeStyle(.ultraThinMaterial)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -51,9 +82,9 @@ struct BenchSessionView: View {
                 
             }
             
-            // Visual Calibration Guide (Only when Idle, for BOTH Live and Demo)
-            // Disappears once the set starts (not idle) or after the first rep is done.
-            if inference.isIdle && inference.repCount == 0 {
+            // Visual Calibration Guide
+            // Shows until user starts moving (not idle) - then hides permanently
+            if !calibrationDismissed {
                 GeometryReader { geo in
                     let w = geo.size.width
                     let h = geo.size.height
@@ -79,7 +110,10 @@ struct BenchSessionView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .allowsHitTesting(false)
+                .transition(.opacity)
+                .animation(.easeOut(duration: 0.5), value: calibrationDismissed)
             }
+
 
             // Overlays
             VStack {
@@ -129,10 +163,16 @@ struct BenchSessionView: View {
                 ZStack(alignment: .bottom) {
                     // Center: Tracking & Prediction
                     VStack(spacing: 8) {
-                        Text(pose.statusText)
-                            .font(.subheadline.bold()) 
-                            .padding(8)
-                            .background(.ultraThinMaterial, in: Capsule())
+                        // Color-coded status based on tracking quality
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(trackingStateColor)
+                                .frame(width: 10, height: 10)
+                            Text(pose.statusText)
+                                .font(.subheadline.bold())
+                        }
+                        .padding(8)
+                        .background(trackingStateBackground, in: Capsule())
                         
                         Text(inference.lastPredictionText)
                             .font(.headline)
@@ -141,6 +181,7 @@ struct BenchSessionView: View {
                             .background(.ultraThinMaterial, in: Capsule())
                     }
                     .padding(.horizontal, 40)
+
                     
                     // Bottom Left: Dev Data Display
                     if showDevData {
@@ -175,8 +216,17 @@ struct BenchSessionView: View {
         .onReceive(pose.$lastFrame.compactMap { $0 }) { frame in
             inference.handle(frame: frame)
         }
+        .onChange(of: inference.isIdle) { _, newValue in
+            // Dismiss calibration overlay permanently once user starts their set
+            if !newValue && !calibrationDismissed {
+                withAnimation(.easeOut(duration: 0.5)) {
+                    calibrationDismissed = true
+                }
+            }
+        }
         .navigationTitle(mode == .demo ? "Bench (Demo)" : "Bench (Live)")
         .navigationBarTitleDisplayMode(.inline)
+
     }
 
     private func startCurrentMode() {

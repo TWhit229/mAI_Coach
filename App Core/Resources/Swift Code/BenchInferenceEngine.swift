@@ -3,7 +3,85 @@ import Combine
 
 import AVFoundation
 
-/// Small helper to run the bench MLP on-device and gate predictions by rep boundaries.
+// MARK: - Coaching Phrase Variety
+/// Multiple phrases for each form issue - picks randomly for natural variety
+private struct CoachingPhrases {
+    static let positiveReinforcement = [
+        "Good form!",
+        "Nice rep!",
+        "Looking good!",
+        "Keep it up!",
+        "Great control!",
+        "Perfect!",
+    ]
+    
+    static let handsWide = [
+        "Try bringing your hands in a bit.",
+        "Your grip is a little wide.",
+        "Narrow your grip slightly.",
+        "Hands could be closer together.",
+    ]
+    
+    static let handsNarrow = [
+        "Try widening your grip a little.",
+        "Your hands are a bit too narrow.",
+        "Move your hands out wider.",
+        "Widen your grip slightly.",
+    ]
+    
+    static let gripUneven = [
+        "Even out your grip.",
+        "Your hands aren't quite even.",
+        "Check your hand placement.",
+        "Balance your grip.",
+    ]
+    
+    static let barbellTilted = [
+        "Keep the bar level.",
+        "The bar is tilting a bit.",
+        "Even out the bar.",
+        "Watch your bar angle.",
+    ]
+    
+    static let depthInsufficient = [
+        "Go a little deeper.",
+        "Touch your chest.",
+        "More depth on that rep.",
+        "Bring it down further.",
+    ]
+    
+    static let incompleteLockout = [
+        "Lock out at the top.",
+        "Extend your arms fully.",
+        "Push all the way up.",
+        "Complete the lockout.",
+    ]
+    
+    static func phrase(for tag: String) -> String {
+        switch tag {
+        case "hands_too_wide":
+            return handsWide.randomElement()!
+        case "hands_too_narrow":
+            return handsNarrow.randomElement()!
+        case "grip_uneven":
+            return gripUneven.randomElement()!
+        case "barbell_tilted":
+            return barbellTilted.randomElement()!
+        case "bar_depth_insufficient":
+            return depthInsufficient.randomElement()!
+        case "incomplete_lockout":
+            return incompleteLockout.randomElement()!
+        default:
+            return tag.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+    
+    static func randomPositive() -> String {
+        return positiveReinforcement.randomElement()!
+    }
+}
+
+
 @MainActor
 final class BenchInferenceEngine: ObservableObject {
     struct Prediction {
@@ -66,41 +144,73 @@ final class BenchInferenceEngine: ObservableObject {
             repCount += 1
             lastTags = selected
             
-            // Construct feedback string
-            var feedback = "Rep \(repCount)."
+            // Play rep count audio
+            AudioCoach.shared.playRep(repCount)
             
             if selected.isEmpty {
                 lastPredictionText = "Rep \(repCount): no major issues"
-                // Optionally give positive reinforcement occasionally
-                if repCount % 3 == 0 { feedback += " Good form." }
+                // Give positive reinforcement occasionally (every 2-3 reps)
+                if repCount % 2 == 0 || repCount % 3 == 0 {
+                    // Small delay before positive feedback
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        AudioCoach.shared.playPositive()
+                    }
+                }
             } else {
                 let issues = selected.joined(separator: ", ")
                 lastPredictionText = "Rep \(repCount): " + issues
-                // Speak the most prominent issue
+                // Play coaching feedback for the most prominent issue
                 if let firstIssue = selected.first {
-                    let spokenIssue = firstIssue.replacingOccurrences(of: "_", with: " ")
-                    feedback += " \(spokenIssue)."
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        AudioCoach.shared.playFormFeedback(for: firstIssue)
+                    }
                 }
             }
-            
-            speak(feedback)
         }
+    }
+
+    
+    /// Preferred voice identifier - tries to use enhanced Samantha voice if available
+    private var preferredVoice: AVSpeechSynthesisVoice? {
+        // Try enhanced voices first (user must download in Settings > Accessibility > Spoken Content)
+        let preferredIdentifiers = [
+            "com.apple.voice.enhanced.en-US.Samantha",
+            "com.apple.voice.premium.en-US.Samantha",
+            "com.apple.ttsbundle.Samantha-compact",
+            "com.apple.voice.compact.en-US.Samantha"
+        ]
+        
+        for id in preferredIdentifiers {
+            if let voice = AVSpeechSynthesisVoice(identifier: id) {
+                return voice
+            }
+        }
+        
+        // Fallback to any English voice
+        return AVSpeechSynthesisVoice(language: "en-US")
     }
     
     private func speak(_ text: String) {
-        // Prevent overlapping speech if needed, or just queue it. 
-        // For reps, we probably want to hear it immediately.
         let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = 0.55
+        utterance.rate = 0.52  // Slightly slower for clarity
+        utterance.pitchMultiplier = 1.05  // Slightly higher pitch for energy
+        utterance.volume = 0.9
+        
+        if let voice = preferredVoice {
+            utterance.voice = voice
+        }
+        
         synthesizer.speak(utterance)
     }
+
     
     func resetSession() {
         repCount = 0
         lastTags = []
         lastPredictionText = "Ready for set"
-        speak("Session reset. Get ready.")
+        AudioCoach.shared.playSessionReset()
     }
+
 }
 
 // MARK: - Rep detection (Bench Press: Start High -> Lower (val increases) -> Push (val decreases) -> End High)

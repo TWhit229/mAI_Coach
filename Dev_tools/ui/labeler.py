@@ -11,7 +11,9 @@ from core.metrics import (
     compute_rep_metrics,
     suggest_auto_tags,
 )
+from core.rep_detector import detect_reps_in_frames
 from core.video import (
+
     run_pose_landmarks_on_video,
     _pose_model_path, 
 )
@@ -223,6 +225,66 @@ class LabelerView(QtWidgets.QWidget):
         self._build_ui()
         self._update_timer_interval()
         self._update_live_frame_metrics(None)
+        
+        # Enable keyboard focus for shortcuts
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        """Handle keyboard shortcuts for faster labeling."""
+        key = event.key()
+        
+        # Space: Play/Pause
+        if key == QtCore.Qt.Key_Space:
+            self._toggle_play()
+            event.accept()
+            return
+        
+        # Left/Right arrows: Frame stepping
+        if key == QtCore.Qt.Key_Left:
+            self._step_frames(-1)
+            event.accept()
+            return
+        if key == QtCore.Qt.Key_Right:
+            self._step_frames(1)
+            event.accept()
+            return
+        
+        # Enter/Return: Save and advance to next
+        if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            self._load_relative(+1, save=True)
+            event.accept()
+            return
+        
+        # Escape: Clear tag selection (select only default)
+        if key == QtCore.Qt.Key_Escape:
+            self._clear_tag_selection()
+            event.accept()
+            return
+        
+        # Number keys 1-9: Toggle tag by index
+        if QtCore.Qt.Key_1 <= key <= QtCore.Qt.Key_9:
+            tag_index = key - QtCore.Qt.Key_1  # 0-indexed
+            self._toggle_tag_by_index(tag_index)
+            event.accept()
+            return
+        
+        # Let parent handle other keys
+        super().keyPressEvent(event)
+
+    def _toggle_tag_by_index(self, index: int):
+        """Toggle a tag by its index in the list."""
+        if index < 0 or index >= self.tag_list.count():
+            return
+        item = self.tag_list.item(index)
+        if item:
+            item.setSelected(not item.isSelected())
+            self._enforce_default_tag_rule()
+
+    def _clear_tag_selection(self):
+        """Clear all tag selections and select only the default tag."""
+        self.tag_list.clearSelection()
+        self._toggle_tag_selection(DEFAULT_OK_TAG, True)
+
 
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
@@ -291,6 +353,15 @@ class LabelerView(QtWidgets.QWidget):
             lambda: self._ensure_pose_data(force=True)
         )
         left.addWidget(self.pose_refresh_btn)
+        
+        # Rep auto-detection button
+        self.auto_split_btn = QtWidgets.QPushButton("🔍 Auto-Split Reps")
+        self.auto_split_btn.setToolTip(
+            "Automatically detect rep boundaries using elbow angle analysis."
+        )
+        self.auto_split_btn.setEnabled(False)
+        self.auto_split_btn.clicked.connect(self._auto_detect_reps)
+        left.addWidget(self.auto_split_btn)
 
         # right: form
         right_column = QtWidgets.QVBoxLayout()
@@ -477,10 +548,10 @@ class LabelerView(QtWidgets.QWidget):
 
         lift_layout.addWidget(self.metrics_box)
         self.lift_placeholder = QtWidgets.QLabel(
-            "No lift-specific tools configured for this movement yet."
+            "Select a supported lift (e.g., Bench Press) to see lift-specific tools."
         )
         self.lift_placeholder.setAlignment(QtCore.Qt.AlignCenter)
-        self.lift_placeholder.setStyleSheet("color: #777; font-style: italic;")
+        self.lift_placeholder.setStyleSheet("color: #777; font-style: italic; padding: 20px;")
         lift_layout.addWidget(self.lift_placeholder)
 
         self.tag_events = QtWidgets.QListWidget()
@@ -491,15 +562,30 @@ class LabelerView(QtWidgets.QWidget):
         right.addWidget(remove_tag)
 
         right.addStretch(1)
+        
+        # Progress indicator
+        self.progress_label = QtWidgets.QLabel("Rep –/–")
+        self.progress_label.setStyleSheet("font-weight: bold; color: #666;")
+        self.progress_label.setAlignment(QtCore.Qt.AlignCenter)
+        right_column.addWidget(self.progress_label)
+        
+        # Keyboard shortcuts hint
+        shortcuts_label = QtWidgets.QLabel(
+            "⌨️ Space: play/pause | ←→: frames | 1-9: tags | Enter: save+next | Esc: clear"
+        )
+        shortcuts_label.setStyleSheet("color: #888; font-size: 11px;")
+        shortcuts_label.setAlignment(QtCore.Qt.AlignCenter)
+        right_column.addWidget(shortcuts_label)
+        
         nav = QtWidgets.QHBoxLayout()
         right_column.addLayout(nav)
-        self.prev_btn = QtWidgets.QPushButton("Previous")
+        self.prev_btn = QtWidgets.QPushButton("◀ Previous")
         self.prev_btn.clicked.connect(lambda: self._load_relative(-1))
         nav.addWidget(self.prev_btn)
-        self.save_btn = QtWidgets.QPushButton("Save")
+        self.save_btn = QtWidgets.QPushButton("💾 Save")
         self.save_btn.clicked.connect(self._save_dataset)
         nav.addWidget(self.save_btn)
-        self.next_btn = QtWidgets.QPushButton("Save + Next")
+        self.next_btn = QtWidgets.QPushButton("Save + Next ▶")
         self.next_btn.clicked.connect(lambda: self._load_relative(+1, save=True))
         nav.addWidget(self.next_btn)
         self._update_body_part_preview()
@@ -635,12 +721,22 @@ class LabelerView(QtWidgets.QWidget):
         }
 
     def _refresh_lift_specific_tools(self):
+        """Show/hide lift-specific tools based on the current movement."""
         movement = self._movement_name_for_tools()
         use_bench = self._lift_uses_bench_tools(movement)
+        
+        # Update box title to show which lift tools are active
+        if use_bench:
+            self.lift_tools_box.setTitle("Lift-specific tools (Bench Press)")
+        else:
+            self.lift_tools_box.setTitle("Lift-specific tools")
+        
+        # Show/hide bench-specific widgets
         for widget in (self.live_metrics_box, self.metrics_box):
             widget.setVisible(use_bench)
         self.lift_placeholder.setVisible(not use_bench)
         self.lift_tools_box.setVisible(True)
+        
         if not use_bench:
             self._update_live_frame_metrics(None)
 
@@ -931,6 +1027,7 @@ class LabelerView(QtWidgets.QWidget):
         self._update_form_from_dataset()
         self._render_frame(0)
         self.pose_refresh_btn.setEnabled(True)
+        self.auto_split_btn.setEnabled(True)
         if not self._has_pose_overlay():
             self._ensure_pose_data(force=False)
 
@@ -1014,19 +1111,26 @@ class LabelerView(QtWidgets.QWidget):
 
     def _update_nav_buttons(self):
         total = len(self.session.video_paths)
+        idx = self.session.current_index
+        
+        # Update progress label
+        if total > 0 and idx >= 0:
+            self.progress_label.setText(f"Rep {idx + 1}/{total}")
+        else:
+            self.progress_label.setText("Rep –/–")
+        
         if total <= 1:
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
         else:
-            idx = self.session.current_index
             self.prev_btn.setEnabled(idx > 0)
             self.next_btn.setEnabled(idx < total - 1)
             
             if self._auto_finish and idx >= total - 1:
-                 self.next_btn.setText("Save + Finish")
+                 self.next_btn.setText("💾 Save + Finish")
                  self.next_btn.setEnabled(True)
             else:
-                 self.next_btn.setText("Save + Next")
+                 self.next_btn.setText("Save + Next ▶")
 
     # Playback / Video --------------------------------------------------------
     def _render_frame(self, index: int):
@@ -1168,7 +1272,68 @@ class LabelerView(QtWidgets.QWidget):
             events.pop(row)
             self._refresh_tag_events()
 
+    # Rep Auto-Detection -------------------------------------------------------
+    def _auto_detect_reps(self):
+        """Detect rep boundaries in the current video using elbow angle analysis."""
+        if not self.session.current_dataset:
+            QtWidgets.QMessageBox.warning(
+                self, "No Data", "Load a video first."
+            )
+            return
+        
+        frames = self.session.current_dataset.get("frames", [])
+        if not frames:
+            QtWidgets.QMessageBox.warning(
+                self, "No Pose Data", 
+                "Run pose tracking first to get landmark data."
+            )
+            return
+        
+        # Detect reps
+        reps = detect_reps_in_frames(frames)
+        
+        if not reps:
+            QtWidgets.QMessageBox.information(
+                self, "No Reps Detected",
+                "Could not detect any complete reps in this video.\n\n"
+                "Make sure the video shows a full rep cycle (arms extended → bent → extended)."
+            )
+            return
+        
+        # Show results
+        rep_info = "\n".join([
+            f"Rep {i+1}: frames {r.start_frame} - {r.end_frame}"
+            for i, r in enumerate(reps)
+        ])
+        
+        msg = QtWidgets.QMessageBox(self)
+        msg.setWindowTitle("Reps Detected")
+        msg.setText(f"Detected {len(reps)} rep(s):")
+        msg.setDetailedText(rep_info)
+        msg.setInformativeText(
+            "Click a rep number below to jump to that frame, or close this dialog."
+        )
+        
+        # Add buttons for each rep
+        rep_buttons = []
+        for i, rep in enumerate(reps):
+            btn = msg.addButton(f"Go to Rep {i+1}", QtWidgets.QMessageBox.ActionRole)
+            rep_buttons.append((btn, rep.start_frame))
+        
+        msg.addButton(QtWidgets.QMessageBox.Close)
+        msg.exec()
+        
+        # Check which button was clicked
+        clicked = msg.clickedButton()
+        for btn, start_frame in rep_buttons:
+            if clicked == btn:
+                self.current_frame = start_frame
+                self._render_frame(start_frame)
+                self.scrubber.setValue(start_frame)
+                break
+
     # Pose Tracking (Job) -----------------------------------------------------
+
     def _ensure_pose_data(self, force: bool = False):
         if self._pose_job_active:
             return
