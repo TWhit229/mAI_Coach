@@ -72,7 +72,7 @@ def main():
         print(f"\nCut at {cut_time:.1f}s (frame {frame_idx}):")
         print(f"  Angle: {center_angle:.1f}° (window: {window_angles.min():.1f}° - {window_angles.max():.1f}°)")
         print(f"  Velocity: {velocity/2:.1f}°/frame")
-        print(f"  Context: ", end="")
+        print("  Context: ", end="")
         
         # Show if this looks like a peak, valley, or transitional
         if center_angle > 155:

@@ -3,7 +3,6 @@
 
 from pbxproj import XcodeProject
 from pathlib import Path
-import os
 
 # Paths
 project_path = "/Users/whitney/Documents/mAI_Coach/App Core/mAICoach.xcodeproj/project.pbxproj"
