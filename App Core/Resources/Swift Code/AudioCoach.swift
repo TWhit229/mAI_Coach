@@ -29,13 +29,17 @@ final class AudioCoach {
     /// Play rep count audio (e.g., "Rep 1.")
     func playRep(_ number: Int) {
         let fileName = "rep_\(min(number, 12))"  // We only have up to rep_12
-        playAudio(fileName) ?? speakFallback("Rep \(number).")
+        if !playAudio(fileName) {
+            speakFallback("Rep \(number).")
+        }
     }
     
     /// Play positive reinforcement
     func playPositive() {
         let fileName = positiveFiles.randomElement()!
-        playAudio(fileName) ?? speakFallback("Good form!")
+        if !playAudio(fileName) {
+            speakFallback("Good form!")
+        }
     }
     
     /// Play coaching for a specific form issue
@@ -68,27 +72,32 @@ final class AudioCoach {
         }
         
         let fileName = files.randomElement()!
-        playAudio(fileName) ?? speakFallback(fallbackText)
+        if !playAudio(fileName) {
+            speakFallback(fallbackText)
+        }
     }
     
     /// Play session reset audio
     func playSessionReset() {
-        playAudio("session_reset") ?? speakFallback("Session reset. Get ready.")
+        if !playAudio("session_reset") {
+            speakFallback("Session reset. Get ready.")
+        }
     }
     
     /// Play ready audio
     func playReady() {
-        playAudio("ready") ?? speakFallback("Ready for your set.")
+        if !playAudio("ready") {
+            speakFallback("Ready for your set.")
+        }
     }
     
     // MARK: - Private
     
     /// Try to play an audio file, returns true if successful
-    @discardableResult
-    private func playAudio(_ fileName: String) -> Bool? {
+    private func playAudio(_ fileName: String) -> Bool {
         guard let url = Bundle.main.url(forResource: fileName, withExtension: "mp3") else {
             print("⚠️ AudioCoach: File not found: \(fileName).mp3")
-            return nil
+            return false
         }
         
         do {
@@ -98,7 +107,7 @@ final class AudioCoach {
             return true
         } catch {
             print("⚠️ AudioCoach: Failed to play \(fileName): \(error)")
-            return nil
+            return false
         }
     }
     

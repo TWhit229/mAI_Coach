@@ -155,7 +155,7 @@ class VideoCutView(QtWidgets.QWidget):
         mark_row.addWidget(self.split_btn)
         
         # Auto-split section with lift type dropdown
-        auto_box = QtWidgets.QGroupBox("Auto-Split")
+        auto_box = QtWidgets.QGroupBox("Auto-Split (Experimental)")
         auto_layout = QtWidgets.QHBoxLayout(auto_box)
         auto_layout.setContentsMargins(8, 4, 8, 4)
         
@@ -171,7 +171,8 @@ class VideoCutView(QtWidgets.QWidget):
         
         self.auto_split_btn = QtWidgets.QPushButton("🔍 Detect Reps [A]")
         self.auto_split_btn.setToolTip(
-            "Run pose tracking and automatically detect rep boundaries for the selected lift."
+            "Run pose tracking and automatically detect rep boundaries for the selected lift.\n"
+            "⚠️ Experimental: Results may need manual adjustment."
         )
         self.auto_split_btn.clicked.connect(self._auto_split_by_reps)
         self.auto_split_btn.setEnabled(False)
