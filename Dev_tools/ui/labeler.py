@@ -11,9 +11,7 @@ from core.metrics import (
     compute_rep_metrics,
     suggest_auto_tags,
 )
-from core.rep_detector import detect_reps_in_frames
 from core.video import (
-
     run_pose_landmarks_on_video,
     _pose_model_path, 
 )
