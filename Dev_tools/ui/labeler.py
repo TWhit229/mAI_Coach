@@ -353,15 +353,6 @@ class LabelerView(QtWidgets.QWidget):
             lambda: self._ensure_pose_data(force=True)
         )
         left.addWidget(self.pose_refresh_btn)
-        
-        # Rep auto-detection button
-        self.auto_split_btn = QtWidgets.QPushButton("🔍 Auto-Split Reps")
-        self.auto_split_btn.setToolTip(
-            "Automatically detect rep boundaries using elbow angle analysis."
-        )
-        self.auto_split_btn.setEnabled(False)
-        self.auto_split_btn.clicked.connect(self._auto_detect_reps)
-        left.addWidget(self.auto_split_btn)
 
         # right: form
         right_column = QtWidgets.QVBoxLayout()
@@ -1027,7 +1018,6 @@ class LabelerView(QtWidgets.QWidget):
         self._update_form_from_dataset()
         self._render_frame(0)
         self.pose_refresh_btn.setEnabled(True)
-        self.auto_split_btn.setEnabled(True)
         if not self._has_pose_overlay():
             self._ensure_pose_data(force=False)
 
@@ -1271,66 +1261,6 @@ class LabelerView(QtWidgets.QWidget):
         if 0 <= row < len(events):
             events.pop(row)
             self._refresh_tag_events()
-
-    # Rep Auto-Detection -------------------------------------------------------
-    def _auto_detect_reps(self):
-        """Detect rep boundaries in the current video using elbow angle analysis."""
-        if not self.session.current_dataset:
-            QtWidgets.QMessageBox.warning(
-                self, "No Data", "Load a video first."
-            )
-            return
-        
-        frames = self.session.current_dataset.get("frames", [])
-        if not frames:
-            QtWidgets.QMessageBox.warning(
-                self, "No Pose Data", 
-                "Run pose tracking first to get landmark data."
-            )
-            return
-        
-        # Detect reps
-        reps = detect_reps_in_frames(frames)
-        
-        if not reps:
-            QtWidgets.QMessageBox.information(
-                self, "No Reps Detected",
-                "Could not detect any complete reps in this video.\n\n"
-                "Make sure the video shows a full rep cycle (arms extended → bent → extended)."
-            )
-            return
-        
-        # Show results
-        rep_info = "\n".join([
-            f"Rep {i+1}: frames {r.start_frame} - {r.end_frame}"
-            for i, r in enumerate(reps)
-        ])
-        
-        msg = QtWidgets.QMessageBox(self)
-        msg.setWindowTitle("Reps Detected")
-        msg.setText(f"Detected {len(reps)} rep(s):")
-        msg.setDetailedText(rep_info)
-        msg.setInformativeText(
-            "Click a rep number below to jump to that frame, or close this dialog."
-        )
-        
-        # Add buttons for each rep
-        rep_buttons = []
-        for i, rep in enumerate(reps):
-            btn = msg.addButton(f"Go to Rep {i+1}", QtWidgets.QMessageBox.ActionRole)
-            rep_buttons.append((btn, rep.start_frame))
-        
-        msg.addButton(QtWidgets.QMessageBox.Close)
-        msg.exec()
-        
-        # Check which button was clicked
-        clicked = msg.clickedButton()
-        for btn, start_frame in rep_buttons:
-            if clicked == btn:
-                self.current_frame = start_frame
-                self._render_frame(start_frame)
-                self.scrubber.setValue(start_frame)
-                break
 
     # Pose Tracking (Job) -----------------------------------------------------
 

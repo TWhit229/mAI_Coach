@@ -23,7 +23,7 @@ except Exception:
     mp = None
     _HAS_MEDIAPIPE = False
 
-from core.utils import lowpass_ema
+from core.utils import lowpass_ema, LandmarkSmoother
 from core.config import DEV_ROOT
 
 POSE_MODEL_PATHS = {
@@ -183,13 +183,17 @@ def run_pose_landmarks_on_video(
         base_options=BaseOptions(model_asset_path=str(model_path)),
         running_mode=RunningMode.VIDEO,
         num_poses=1,
-        min_pose_detection_confidence=float(settings.get("det", 0.5)),
-        min_pose_presence_confidence=float(settings.get("prs", 0.7)),
-        min_tracking_confidence=float(settings.get("trk", 0.7)),
+        # Lowered thresholds for better tracking through occlusion (matches iOS)
+        min_pose_detection_confidence=float(settings.get("det", 0.4)),
+        min_pose_presence_confidence=float(settings.get("prs", 0.4)),
+        min_tracking_confidence=float(settings.get("trk", 0.3)),
         output_segmentation_masks=bool(settings.get("seg", False)),
     )
     landmarker = PoseLandmarker.create_from_options(options)
     fps_val = fps if fps and fps > 0 else 30.0
+    # Use LandmarkSmoother for One Euro Filter + outlier rejection (matches iOS)
+    smoother = LandmarkSmoother(max_jump_fraction=0.15)
+    use_advanced_smoothing = settings.get("advanced_smooth", True)
     ema_alpha = float(settings.get("ema", 0.0) or 0.0)
     prev_smoothed: Optional[np.ndarray] = None
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -219,7 +223,10 @@ def run_pose_landmarks_on_video(
                     ],
                     dtype=np.float32,
                 )
-                if ema_alpha > 0.0:
+                if use_advanced_smoothing:
+                    # One Euro Filter + outlier rejection (matches iOS behavior)
+                    pts = smoother.smooth(pts, time_ms)
+                elif ema_alpha > 0.0:
                     pts = lowpass_ema(prev_smoothed, pts, ema_alpha)
                     prev_smoothed = pts
                 else:

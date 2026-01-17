@@ -74,7 +74,7 @@ class VideoSession(QtCore.QObject):
         return True
 
     def save_current_dataset(self) -> None:
-        """Save current dataset to JSON."""
+        """Save current dataset to JSON with labeling data first."""
         if self.current_index < 0 or self.current_index >= len(self.video_paths):
             return
         if self.current_dataset is None:
@@ -83,7 +83,26 @@ class VideoSession(QtCore.QObject):
         json_path = self._json_path_for_video(video_path)
         if json_path:
             json_path.parent.mkdir(parents=True, exist_ok=True)
-            json_path.write_text(json.dumps(self.current_dataset, indent=2))
+            # Reorder keys: labeling metadata first, frames last
+            label_keys = [
+                "rep_id", "movement", "overall_quality", "load_lbs", "rpe",
+                "camera_angle", "lens", "tags", "auto_tags", "tag_events",
+                "metrics", "tracking_unreliable", "tracking_auto_recommended",
+                "tracking_manual_override", "rotation_override_degrees", "fps"
+            ]
+            ordered = {}
+            # Add label keys first (if present)
+            for key in label_keys:
+                if key in self.current_dataset:
+                    ordered[key] = self.current_dataset[key]
+            # Add any other keys except 'frames'
+            for key in self.current_dataset:
+                if key not in ordered and key != "frames":
+                    ordered[key] = self.current_dataset[key]
+            # Add frames last (largest data)
+            if "frames" in self.current_dataset:
+                ordered["frames"] = self.current_dataset["frames"]
+            json_path.write_text(json.dumps(ordered, indent=2))
 
     def load(self, path: Optional[Path] = None):
         if path is not None:

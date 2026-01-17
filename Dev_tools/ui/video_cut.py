@@ -269,7 +269,7 @@ class VideoCutView(QtWidgets.QWidget):
         prerep_row.addWidget(QtWidgets.QLabel("Pre-rep padding:"))
         self.prerep_spin = QtWidgets.QSpinBox()
         self.prerep_spin.setRange(0, 5000)
-        self.prerep_spin.setValue(2000)  # 2 seconds default
+        self.prerep_spin.setValue(1000)  # 1 second default
         self.prerep_spin.setSuffix(" ms")
         self.prerep_spin.setToolTip(
             "Extend cut this many milliseconds BEFORE the rep starts (for pose model warmup)."
@@ -979,26 +979,22 @@ class VideoCutView(QtWidgets.QWidget):
             vf_parts.append(f"scale=-2:{self.TARGET_HEIGHT}")
         
         vf = ",".join(vf_parts)
+        duration_sec = (end_ms - start_ms) / 1000.0
         try:
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-ss",
-                f"{start_ms / 1000:.3f}",
-                "-to",
-                f"{end_ms / 1000:.3f}",
-                "-i",
-                str(src),
-                "-vf",
-                vf,
-                "-r",
-                str(self.TARGET_FPS),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "20",
+                "-ss", f"{start_ms / 1000:.3f}",  # Seek position (before -i for fast seek)
+                "-i", str(src),
+                "-t", f"{duration_sec:.3f}",  # Duration to encode
+                "-vf", vf,
+                "-r", str(self.TARGET_FPS),
+                "-c:v", "libx264",
+                "-preset", "medium",  # Better quality than veryfast
+                "-crf", "18",  # Slightly better quality
+                "-pix_fmt", "yuv420p",  # Ensure compatibility
+                "-map_metadata", "-1",  # Strip metadata including rotation tags
+                "-movflags", "+faststart",  # Web-friendly
                 "-an",  # Remove audio for cleaner training clips
                 str(dst),
             ]
