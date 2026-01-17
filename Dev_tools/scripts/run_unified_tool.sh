@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENV_DIR="$REPO_ROOT/Dev_tools/.venv"
+DEV_TOOLS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VENV_DIR="$DEV_TOOLS_DIR/.venv"
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "[run] Virtual environment not found. Run scripts/setup_unified_env.sh first." >&2
@@ -66,4 +66,4 @@ fi
 
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-cocoa}"
 
-python "$REPO_ROOT/Dev_tools/unified_tool.py"
+python "$DEV_TOOLS_DIR/unified_tool.py"

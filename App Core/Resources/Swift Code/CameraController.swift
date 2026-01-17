@@ -11,8 +11,17 @@ final class CameraController: NSObject, ObservableObject {
     /// Current camera position (published so UI can reflect Front/Back)
     @Published private(set) var position: AVCaptureDevice.Position = .back
 
+    // MARK: - ML Frame Rate Limiting
+    /// Target frames per second for ML processing (preview stays at native rate)
+    private let mlTargetFPS: Double = 15.0
+    /// Frame counter for rate limiting
+    private var frameCounter: Int = 0
+    /// Skip every N frames to achieve target FPS (calculated from camera FPS)
+    private var frameSkipInterval: Int = 2  // Default: skip every 2nd frame (30→15fps)
+
     /// Frames go to whoever sets this (BenchSessionView → PoseLandmarkerService)
     var onFrame: ((CMSampleBuffer, CGImagePropertyOrientation) -> Void)?
+
 
     // MARK: - Public
     func start() async {
@@ -169,6 +178,17 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
+        // Frame rate limiting for ML processing
+        // Camera preview runs at native FPS (via AVCaptureVideoPreviewLayer)
+        // ML pipeline only receives frames at reduced rate (e.g., 15 fps)
+        frameCounter += 1
+        
+        // Skip frames to reduce ML processing load
+        // frameSkipInterval=2 means process every 2nd frame (30fps → 15fps)
+        guard frameCounter % frameSkipInterval == 0 else {
+            return
+        }
+        
         let cgOri = cgImageOrientation(for: UIDevice.current.orientation)
         // Ensure PoseLandmarkerService (@MainActor) runs on main
         DispatchQueue.main.async { [weak self] in
@@ -176,3 +196,4 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
     }
 }
+

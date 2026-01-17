@@ -8,7 +8,10 @@ import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from core.video import video_rotation_degrees, rotate_frame_if_needed
+from core.rep_detector import detect_reps_in_frames
+from core.video import video_rotation_degrees, rotate_frame_if_needed, run_pose_landmarks_on_video, _pose_model_path, detect_best_rotation
+from label_config import default_movement_settings
+
 # We need _rotation_value_from_index helper, maybe define it here or in widgets or labeler?
 # It was in labeler.py, I should probably put it in core/utils or widgets if used in multiple places.
 # For now, I'll copy it here or use a shared one if I moved it.
@@ -58,6 +61,8 @@ class VideoCutView(QtWidgets.QWidget):
         self.playback_speed = 1.0
         self._speed_residual = 0.0
         self._last_capture_index = -1
+        self._preview_scale = 1.0  # Scale factor for preview (computed on load)
+        self._preview_end_frame: Optional[int] = None  # For clip preview auto-stop
         self.play_timer = QtCore.QTimer(self)
         self.play_timer.setTimerType(QtCore.Qt.PreciseTimer)
         self.play_timer.timeout.connect(self._advance_frame)
@@ -70,10 +75,14 @@ class VideoCutView(QtWidgets.QWidget):
         self.rotation_lock_value: Optional[int] = None
         self.current_rotation_override: Optional[int] = None
         self.current_rotation = 0
+        # Preview quality settings
+        self.PREVIEW_HEIGHT = 480  # Scale to this height for smoother playback
 
         self._build_ui()
+        self._setup_shortcuts()
         self._change_speed("1.0x")
         self._update_nav_buttons()
+
 
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
@@ -102,19 +111,30 @@ class VideoCutView(QtWidgets.QWidget):
         controls = QtWidgets.QHBoxLayout()
         left.addLayout(controls)
 
-        def ctrl_btn(text, slot):
-            btn = QtWidgets.QPushButton(text)
-            btn.clicked.connect(slot)
-            controls.addWidget(btn)
-
-        ctrl_btn("⟵ Frame", lambda: self._step_frames(-1))
-        ctrl_btn("-0.5s", lambda: self._step_seconds(-0.5))
-        self.play_btn = QtWidgets.QPushButton("Play")
+        # Navigation buttons with shortcut hints
+        frame_back_btn = QtWidgets.QPushButton("◀ Frame [←]")
+        frame_back_btn.clicked.connect(lambda: self._step_frames(-1))
+        controls.addWidget(frame_back_btn)
+        
+        sec_back_btn = QtWidgets.QPushButton("-0.5s [,]")
+        sec_back_btn.clicked.connect(lambda: self._step_seconds(-0.5))
+        controls.addWidget(sec_back_btn)
+        
+        self.play_btn = QtWidgets.QPushButton("Play [Space]")
         self.play_btn.clicked.connect(self._toggle_play)
         controls.addWidget(self.play_btn)
-        ctrl_btn("Replay", self._replay)
-        ctrl_btn("+0.5s", lambda: self._step_seconds(0.5))
-        ctrl_btn("Frame ⟶", lambda: self._step_frames(1))
+        
+        replay_btn = QtWidgets.QPushButton("Replay [R]")
+        replay_btn.clicked.connect(self._replay)
+        controls.addWidget(replay_btn)
+        
+        sec_fwd_btn = QtWidgets.QPushButton("+0.5s [.]")
+        sec_fwd_btn.clicked.connect(lambda: self._step_seconds(0.5))
+        controls.addWidget(sec_fwd_btn)
+        
+        frame_fwd_btn = QtWidgets.QPushButton("Frame ▶ [→]")
+        frame_fwd_btn.clicked.connect(lambda: self._step_frames(1))
+        controls.addWidget(frame_fwd_btn)
 
         controls.addStretch(1)
         self.speed_box = QtWidgets.QComboBox()
@@ -126,14 +146,41 @@ class VideoCutView(QtWidgets.QWidget):
 
         mark_row = QtWidgets.QHBoxLayout()
         left.addLayout(mark_row)
-        self.split_btn = QtWidgets.QPushButton("Mark Split")
+        self.split_btn = QtWidgets.QPushButton("✂ Mark Split [M]")
         self.split_btn.setToolTip(
             "End current clip at the playhead and start the next one with 0.1s overlap."
         )
         self.split_btn.clicked.connect(self._mark_split)
         self.split_btn.setEnabled(False)
         mark_row.addWidget(self.split_btn)
+        
+        # Auto-split section with lift type dropdown
+        auto_box = QtWidgets.QGroupBox("Auto-Split (Experimental)")
+        auto_layout = QtWidgets.QHBoxLayout(auto_box)
+        auto_layout.setContentsMargins(8, 4, 8, 4)
+        
+        auto_layout.addWidget(QtWidgets.QLabel("Lift:"))
+        self.lift_combo = QtWidgets.QComboBox()
+        self.lift_combo.addItems(["Bench Press", "Other (manual only)"])
+        self.lift_combo.setToolTip(
+            "Select the lift type for rep detection.\n"
+            "Only Bench Press has auto-detection. Other lifts require manual marking."
+        )
+        self.lift_combo.currentIndexChanged.connect(self._on_lift_changed)
+        auto_layout.addWidget(self.lift_combo)
+        
+        self.auto_split_btn = QtWidgets.QPushButton("🔍 Detect Reps [A]")
+        self.auto_split_btn.setToolTip(
+            "Run pose tracking and automatically detect rep boundaries for the selected lift.\n"
+            "⚠️ Experimental: Results may need manual adjustment."
+        )
+        self.auto_split_btn.clicked.connect(self._auto_split_by_reps)
+        self.auto_split_btn.setEnabled(False)
+        auto_layout.addWidget(self.auto_split_btn)
+        
+        mark_row.addWidget(auto_box)
         mark_row.addStretch(1)
+
 
         rotation_row = QtWidgets.QHBoxLayout()
         left.addLayout(rotation_row)
@@ -158,11 +205,19 @@ class VideoCutView(QtWidgets.QWidget):
         rotation_row.addWidget(self.rotation_lock_cb)
         rotation_row.addStretch(1)
 
+        # Scrubber with time indicator
+        scrubber_row = QtWidgets.QHBoxLayout()
         self.scrubber = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.scrubber.setRange(0, 0)
         self.scrubber.sliderPressed.connect(self._pause_for_scrub)
         self.scrubber.valueChanged.connect(self._scrubbed)
-        left.addWidget(self.scrubber)
+        scrubber_row.addWidget(self.scrubber, stretch=1)
+        
+        self.time_label = QtWidgets.QLabel("0:00.0 / 0:00.0")
+        self.time_label.setMinimumWidth(120)
+        self.time_label.setStyleSheet("font-family: monospace;")
+        scrubber_row.addWidget(self.time_label)
+        left.addLayout(scrubber_row)
 
         self.status_label = QtWidgets.QLabel("")
         left.addWidget(self.status_label)
@@ -178,27 +233,65 @@ class VideoCutView(QtWidgets.QWidget):
         clips_header = QtWidgets.QHBoxLayout()
         clips_header.addWidget(QtWidgets.QLabel("Marked clips"))
         clips_header.addStretch(1)
+        preview_btn = QtWidgets.QPushButton("▶ Preview")
+        preview_btn.setToolTip("Preview the selected clip (plays from start to end).")
+        preview_btn.clicked.connect(self._preview_selected_cut)
         remove_btn = QtWidgets.QPushButton("Remove selected")
         remove_btn.setToolTip("Remove the highlighted clip from the list.")
         remove_btn.clicked.connect(self._remove_selected_cut)
         clear_btn = QtWidgets.QPushButton("Clear clips")
         clear_btn.setToolTip("Delete all clips for this video.")
         clear_btn.clicked.connect(self._clear_cuts)
+        clips_header.addWidget(preview_btn)
         clips_header.addWidget(remove_btn)
         clips_header.addWidget(clear_btn)
         right.addLayout(clips_header)
 
         self.cut_list = QtWidgets.QListWidget()
+        self.cut_list.itemDoubleClicked.connect(self._on_cut_double_clicked)
+        self.cut_list.setToolTip("Double-click a clip to jump to its start.")
         right.addWidget(self.cut_list, stretch=1)
 
-        pad_row = QtWidgets.QHBoxLayout()
+        # Output options
+        options_box = QtWidgets.QGroupBox("Export Options")
+        options_layout = QtWidgets.QVBoxLayout(options_box)
+        
+        # Force vertical checkbox
+        self.force_vertical_cb = QtWidgets.QCheckBox("Force vertical (9:16) for mobile")
+        self.force_vertical_cb.setToolTip(
+            "Output 720x1280 videos suitable for mobile viewing."
+        )
+        self.force_vertical_cb.setChecked(True)  # Default to vertical
+        options_layout.addWidget(self.force_vertical_cb)
+        
+        # Pre-rep padding
+        prerep_row = QtWidgets.QHBoxLayout()
+        prerep_row.addWidget(QtWidgets.QLabel("Pre-rep padding:"))
+        self.prerep_spin = QtWidgets.QSpinBox()
+        self.prerep_spin.setRange(0, 5000)
+        self.prerep_spin.setValue(1000)  # 1 second default
+        self.prerep_spin.setSuffix(" ms")
+        self.prerep_spin.setToolTip(
+            "Extend cut this many milliseconds BEFORE the rep starts (for pose model warmup)."
+        )
+        prerep_row.addWidget(self.prerep_spin)
+        prerep_row.addStretch(1)
+        options_layout.addLayout(prerep_row)
+        
+        # Post-rep padding
+        postrep_row = QtWidgets.QHBoxLayout()
+        postrep_row.addWidget(QtWidgets.QLabel("Post-rep padding:"))
         self.pad_spin = QtWidgets.QSpinBox()
         self.pad_spin.setRange(0, 2000)
-        self.pad_spin.setValue(120)
-        self.pad_spin.setSuffix(" ms pad")
-        pad_row.addWidget(QtWidgets.QLabel("Padding:"))
-        pad_row.addWidget(self.pad_spin)
-        right.addLayout(pad_row)
+        self.pad_spin.setValue(500)  # 0.5 seconds default
+        self.pad_spin.setSuffix(" ms")
+        self.pad_spin.setToolTip("Extend cut this many milliseconds AFTER the rep ends.")
+        postrep_row.addWidget(self.pad_spin)
+        postrep_row.addStretch(1)
+        options_layout.addLayout(postrep_row)
+        
+        right.addWidget(options_box)
+
 
         nav = QtWidgets.QHBoxLayout()
         self.prev_video_btn = QtWidgets.QPushButton("Previous Video")
@@ -212,6 +305,27 @@ class VideoCutView(QtWidgets.QWidget):
         self.save_next_btn.clicked.connect(self._save_and_advance)
         nav.addWidget(self.save_next_btn)
         right.addLayout(nav)
+
+    def _setup_shortcuts(self):
+        """Set up keyboard shortcuts for video navigation and editing."""
+        from PySide6.QtGui import QShortcut, QKeySequence
+        
+        # Playback controls
+        QShortcut(QKeySequence(QtCore.Qt.Key_Space), self, self._toggle_play)
+        QShortcut(QKeySequence(QtCore.Qt.Key_R), self, self._replay)
+        
+        # Frame navigation
+        QShortcut(QKeySequence(QtCore.Qt.Key_Left), self, lambda: self._step_frames(-1))
+        QShortcut(QKeySequence(QtCore.Qt.Key_Right), self, lambda: self._step_frames(1))
+        QShortcut(QKeySequence(QtCore.Qt.Key_Comma), self, lambda: self._step_seconds(-0.5))
+        QShortcut(QKeySequence(QtCore.Qt.Key_Period), self, lambda: self._step_seconds(0.5))
+        
+        # Editing actions
+        QShortcut(QKeySequence(QtCore.Qt.Key_M), self, self._mark_split)
+        QShortcut(QKeySequence(QtCore.Qt.Key_A), self, self._auto_split_by_reps)
+        
+        # Save
+        QShortcut(QKeySequence("Ctrl+S"), self, self._save_current_video)
 
     def _release_capture(self):
         if self.cap:
@@ -249,6 +363,15 @@ class VideoCutView(QtWidgets.QWidget):
         )
         if rotation:
             frame = rotate_frame_if_needed(frame, rotation)
+        
+        # Downsample for preview performance
+        h, w = frame.shape[:2]
+        if h > self.PREVIEW_HEIGHT:
+            scale = self.PREVIEW_HEIGHT / h
+            new_w = int(w * scale)
+            new_h = self.PREVIEW_HEIGHT
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
         return frame
 
     def _on_cutter_rotation_changed(self, state: int):
@@ -409,8 +532,10 @@ class VideoCutView(QtWidgets.QWidget):
         self.scrubber.setRange(0, max(0, self.frame_count - 1))
         self.scrubber.setEnabled(True)
         self.split_btn.setEnabled(True)
+        self.auto_split_btn.setEnabled(True)
+
         self.playing = False
-        self.play_btn.setText("Play")
+        self.play_btn.setText("Play [Space]")
         self._update_timer_interval()
         self._render_frame(0)
         self._refresh_cut_list()
@@ -441,6 +566,7 @@ class VideoCutView(QtWidgets.QWidget):
         self.scrubber.blockSignals(True)
         self.scrubber.setValue(idx)
         self.scrubber.blockSignals(False)
+        self._update_time_label()
 
     def _mark_split(self):
         path = self._current_video_path()
@@ -517,6 +643,243 @@ class VideoCutView(QtWidgets.QWidget):
         self.cuts[path] = []
         self._refresh_cut_list()
 
+    def _on_cut_double_clicked(self, item):
+        """Jump to the start of the double-clicked cut."""
+        row = self.cut_list.row(item)
+        path = self._current_video_path()
+        if not path:
+            return
+        clips = self.cuts.get(path, [])
+        if row < 0 or row >= len(clips):
+            return
+        start_ms, end_ms = clips[row]
+        # Jump to start frame
+        frame_idx = int(start_ms / 1000.0 * self.fps)
+        self.playing = False
+        self.play_btn.setText("Play [Space]")
+        self._render_frame(frame_idx)
+        self.status_label.setText(f"Jumped to clip {row + 1} start: {start_ms / 1000:.2f}s")
+
+    def _preview_selected_cut(self):
+        """Preview the selected clip by playing from start to end."""
+        path = self._current_video_path()
+        if not path:
+            return
+        row = self.cut_list.currentRow()
+        if row < 0:
+            QtWidgets.QMessageBox.information(
+                self, "No Selection", "Select a clip from the list to preview."
+            )
+            return
+        clips = self.cuts.get(path, [])
+        if row >= len(clips):
+            return
+        start_ms, end_ms = clips[row]
+        # Jump to start and start playing
+        start_frame = int(start_ms / 1000.0 * self.fps)
+        end_frame = int(end_ms / 1000.0 * self.fps)
+        self._render_frame(start_frame)
+        # Store preview end frame so we stop there
+        self._preview_end_frame = end_frame
+        self.playing = True
+        self.play_btn.setText("Pause [Space]")
+        self.status_label.setText(f"Previewing clip {row + 1}: {start_ms / 1000:.2f}s → {end_ms / 1000:.2f}s")
+
+    def _on_lift_changed(self, index: int):
+        """Handle lift type selection change."""
+        lift = self.lift_combo.currentText()
+        is_bench = "Bench" in lift
+        
+        # Only enable auto-split for Bench Press (which has detection algorithm)
+        self.auto_split_btn.setEnabled(is_bench and self.cap is not None)
+        
+        if not is_bench:
+            self.status_label.setText("Auto-detect not available for this lift. Use Mark Split for manual cuts.")
+
+    def _auto_split_by_reps(self):
+        """Run pose tracking and auto-detect rep boundaries."""
+        # Check if a supported lift is selected
+        lift = self.lift_combo.currentText()
+        if "Bench" not in lift:
+            QtWidgets.QMessageBox.warning(
+                self, "Lift Not Supported",
+                "Auto-detection is only available for Bench Press.\n"
+                "Use 'Mark Split' for manual cutting of other lifts."
+            )
+            return
+        
+        path = self._current_video_path()
+        if not path:
+            QtWidgets.QMessageBox.warning(self, "No Video", "Load a video first.")
+            return
+        
+        # Confirm with user
+        resp = QtWidgets.QMessageBox.question(
+            self, "Auto-Split",
+            "This will run pose tracking to detect rep boundaries.\n"
+            "Existing cuts will be replaced.\n\nContinue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if resp != QtWidgets.QMessageBox.Yes:
+            return
+        
+        # Show progress
+        progress = QtWidgets.QProgressDialog(
+            "Detecting best rotation...", "Cancel", 0, 100, self
+        )
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        
+        # Get settings for pose tracking
+        settings = default_movement_settings("bench_press")
+        model_path = _pose_model_path(settings.get("model", "full"))
+        
+        # First, detect best rotation by sampling frames
+        def rotation_progress_cb(msg: str):
+            progress.setLabelText(msg)
+            QtWidgets.QApplication.processEvents()
+        
+        try:
+            best_rotation = detect_best_rotation(
+                str(path), settings, model_path, 
+                sample_count=5, progress_cb=rotation_progress_cb
+            )
+        except Exception as e:
+            progress.close()
+            QtWidgets.QMessageBox.warning(
+                self, "Rotation Detection Failed", 
+                f"Could not auto-detect rotation: {e}\nUsing current rotation setting."
+            )
+            best_rotation = self._effective_rotation_for_video(path)
+        
+        # Apply the detected rotation
+        if best_rotation != 0:
+            self.rotation_overrides[path] = best_rotation
+            self.current_rotation_override = best_rotation
+            target_idx = _rotation_option_index(best_rotation)
+            self.rotation_combo.blockSignals(True)
+            self.rotation_combo.setCurrentIndex(target_idx)
+            self.rotation_combo.blockSignals(False)
+            self._render_frame(self.current_frame)
+        
+        # Update progress for pose tracking
+        progress.setLabelText("Running pose tracker...")
+        progress.setMaximum(self.frame_count)
+        progress.setValue(0)
+        
+        # Track pose (blocking with progress updates)
+        frames = []
+        def progress_cb(done, total):
+            progress.setValue(done)
+            QtWidgets.QApplication.processEvents()
+            return not progress.wasCanceled()
+        
+        try:
+            frames = run_pose_landmarks_on_video(
+                str(path), self.fps, settings, model_path, progress_cb, best_rotation
+            )
+        except Exception as e:
+            progress.close()
+            QtWidgets.QMessageBox.critical(
+                self, "Pose Tracking Failed", f"Error: {e}"
+            )
+            return
+        
+        progress.close()
+        
+        if not frames:
+            QtWidgets.QMessageBox.warning(
+                self, "No Frames", "Pose tracking returned no frames."
+            )
+            return
+        
+        # Detect reps using peak detection
+        # Finds local maxima (lockout positions) and cuts between them
+        self.status_label.setText("Detecting reps...")
+        QtWidgets.QApplication.processEvents()
+        
+        reps = detect_reps_in_frames(frames)
+        
+        # Always save debug data for analysis
+        from core.rep_detector import _compute_avg_elbow_angle, _smooth_angles
+        angles_raw = []
+        timestamps = []
+        for f in frames:
+            landmarks = f.get("landmarks", [])
+            angle = _compute_avg_elbow_angle(landmarks) if landmarks else None
+            angles_raw.append(angle)
+            timestamps.append(f.get("time_ms", 0) or 0)
+        
+        # Smooth for analysis
+        angles_smooth = _smooth_angles(angles_raw, window=21)
+        
+        # Save to CSV for debugging
+        debug_path = path.parent / f"{path.stem}_angles_debug.csv"
+        try:
+            with open(debug_path, "w") as f:
+                f.write("frame,time_ms,angle_raw,angle_smooth\n")
+                for i, (raw, smooth, ts) in enumerate(zip(angles_raw, angles_smooth, timestamps)):
+                    raw_str = f"{raw:.1f}" if raw else ""
+                    smooth_str = f"{smooth:.1f}" if smooth else ""
+                    f.write(f"{i},{ts},{raw_str},{smooth_str}\n")
+            print(f"Debug angles saved to: {debug_path}")
+        except Exception as e:
+            print(f"Could not save debug: {e}")
+        
+        if not reps:
+            # Diagnostic: calculate angle stats to help debug
+            valid_angles = [a for a in angles_smooth if a is not None]
+            
+            diag_msg = ""
+            if not valid_angles:
+                diag_msg = "\n\n⚠️ No valid elbow angles could be computed!"
+            else:
+                min_angle = min(valid_angles)
+                max_angle = max(valid_angles)
+                angle_range = max_angle - min_angle
+                adaptive_lockout = max_angle - (angle_range * 0.3)
+                
+                # Count potential lockouts
+                lockout_candidates = sum(1 for a in valid_angles if a >= adaptive_lockout)
+                
+                diag_msg = (
+                    f"\n\n📊 Diagnostics:\n"
+                    f"• Valid angles: {len(valid_angles)}/{len(frames)} frames\n"
+                    f"• Angle range: {min_angle:.0f}° - {max_angle:.0f}° (span: {angle_range:.0f}°)\n"
+                    f"• Lockout threshold: {adaptive_lockout:.0f}°\n"
+                    f"• Frames above threshold: {lockout_candidates}\n"
+                    f"\n📁 Debug CSV saved to:\n{debug_path}"
+                )
+            
+            QtWidgets.QMessageBox.information(
+                self, "No Reps Detected",
+                "Could not detect any complete reps.\n\n"
+                f"Check the debug CSV file to analyze the angle data.{diag_msg}"
+            )
+            return
+        
+        # Convert frame indices to milliseconds and create cuts
+        new_cuts = []
+        for rep in reps:
+            start_ms = int(rep.start_frame / self.fps * 1000)
+            end_ms = int(rep.end_frame / self.fps * 1000)
+            new_cuts.append((start_ms, end_ms))
+        
+        self.cuts[path] = new_cuts
+        self._refresh_cut_list()
+        
+        rotation_msg = f" (rotation: {best_rotation}°)" if best_rotation != 0 else ""
+        self.status_label.setText(
+            f"Auto-detected {len(reps)} rep(s){rotation_msg}. Review and export when ready."
+        )
+        QtWidgets.QMessageBox.information(
+            self, "Reps Detected",
+            f"Found {len(reps)} rep(s).{rotation_msg}\n\n"
+            "Review the cuts list and click 'Save Clips' to export."
+        )
+
+
     def _save_current_video(self) -> bool:
         video = self._current_video_path()
         if not video:
@@ -554,13 +917,17 @@ class VideoCutView(QtWidgets.QWidget):
         if not clips:
             return False
         rotation = self._effective_rotation_for_video(video)
+        force_vertical = self.force_vertical_cb.isChecked()
+        prerep_pad = self.prerep_spin.value()
+        postrep_pad = self.pad_spin.value()
         errors = False
         for idx, (start, end) in enumerate(clips, 1):
-            s = max(0, start - pad_ms)
-            e = end + pad_ms
+            # Apply pre-rep and post-rep padding
+            s = max(0, start - prerep_pad)
+            e = end + postrep_pad
             stem = video.stem
             out_path = out_dir / f"{stem}_clip{idx:02d}.mp4"
-            if not self._run_ffmpeg(video, out_path, s, e, rotation):
+            if not self._run_ffmpeg(video, out_path, s, e, rotation, force_vertical):
                 errors = True
         if errors:
             QtWidgets.QMessageBox.warning(
@@ -573,6 +940,7 @@ class VideoCutView(QtWidgets.QWidget):
             self, "Clips saved", f"Exported {len(clips)} clip(s) for {video.name}."
         )
         return True
+
 
     def _effective_rotation_for_video(self, video: Path) -> int:
         override = self.rotation_overrides.get(video)
@@ -595,35 +963,39 @@ class VideoCutView(QtWidgets.QWidget):
         return chain
 
     def _run_ffmpeg(
-        self, src: Path, dst: Path, start_ms: int, end_ms: int, rotation: int = 0
+        self, src: Path, dst: Path, start_ms: int, end_ms: int, rotation: int = 0,
+        force_vertical: bool = False
     ) -> bool:
         dst.parent.mkdir(parents=True, exist_ok=True)
         rotation = rotation or 0
         vf_parts = self._rotation_filter_chain(rotation)
-        vf_parts.append(f"scale=-2:{self.TARGET_HEIGHT}")
+        
+        if force_vertical:
+            # Output 720x1280 (9:16) for mobile
+            # First scale to fit within 720x1280, then pad to exact size
+            vf_parts.append("scale=720:1280:force_original_aspect_ratio=decrease")
+            vf_parts.append("pad=720:1280:(ow-iw)/2:(oh-ih)/2:black")
+        else:
+            vf_parts.append(f"scale=-2:{self.TARGET_HEIGHT}")
+        
         vf = ",".join(vf_parts)
+        duration_sec = (end_ms - start_ms) / 1000.0
         try:
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-ss",
-                f"{start_ms / 1000:.3f}",
-                "-to",
-                f"{end_ms / 1000:.3f}",
-                "-i",
-                str(src),
-                "-vf",
-                vf,
-                "-r",
-                str(self.TARGET_FPS),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "20",
-                "-c:a",
-                "copy",
+                "-ss", f"{start_ms / 1000:.3f}",  # Seek position (before -i for fast seek)
+                "-i", str(src),
+                "-t", f"{duration_sec:.3f}",  # Duration to encode
+                "-vf", vf,
+                "-r", str(self.TARGET_FPS),
+                "-c:v", "libx264",
+                "-preset", "medium",  # Better quality than veryfast
+                "-crf", "18",  # Slightly better quality
+                "-pix_fmt", "yuv420p",  # Ensure compatibility
+                "-map_metadata", "-1",  # Strip metadata including rotation tags
+                "-movflags", "+faststart",  # Web-friendly
+                "-an",  # Remove audio for cleaner training clips
                 str(dst),
             ]
             result = subprocess.run(
@@ -653,11 +1025,24 @@ class VideoCutView(QtWidgets.QWidget):
     def _current_time_ms(self) -> float:
         if self.frame_count <= 0:
             return 0.0
+
         return (self.current_frame / (self.fps if self.fps > 0 else 30.0)) * 1000.0
+
+    def _update_time_label(self):
+        """Update the time display showing current position and total duration."""
+        current_sec = self._current_time_ms() / 1000.0
+        total_sec = (self.frame_count / (self.fps if self.fps > 0 else 30.0))
+        
+        def fmt(sec: float) -> str:
+            m = int(sec // 60)
+            s = sec % 60
+            return f"{m}:{s:04.1f}"
+        
+        self.time_label.setText(f"{fmt(current_sec)} / {fmt(total_sec)}")
 
     def _toggle_play(self):
         self.playing = not self.playing
-        self.play_btn.setText("Pause" if self.playing else "Play")
+        self.play_btn.setText("Pause [Space]" if self.playing else "Play [Space]")
 
     def _advance_frame(self):
         if not (self.playing and self.frame_count > 0 and self.cap):
@@ -675,21 +1060,29 @@ class VideoCutView(QtWidgets.QWidget):
         if next_idx >= self.frame_count:
             next_idx = self.frame_count - 1
             self.playing = False
-            self.play_btn.setText("Play")
+            self.play_btn.setText("Play [Space]")
+            self._preview_end_frame = None
+        # Stop at preview end if set
+        elif self._preview_end_frame is not None and next_idx >= self._preview_end_frame:
+            next_idx = self._preview_end_frame
+            self.playing = False
+            self.play_btn.setText("Play [Space]")
+            self.status_label.setText("Preview complete.")
+            self._preview_end_frame = None
         self._render_frame(next_idx)
 
     def _replay(self):
         if self.frame_count <= 0:
             return
         self.playing = True
-        self.play_btn.setText("Pause")
+        self.play_btn.setText("Pause [Space]")
         self._render_frame(0)
 
     def _step_frames(self, delta: int):
         if self.frame_count <= 0:
             return
         self.playing = False
-        self.play_btn.setText("Play")
+        self.play_btn.setText("Play [Space]")
         self._render_frame(self.current_frame + delta)
 
     def _step_seconds(self, seconds: float):
@@ -709,7 +1102,7 @@ class VideoCutView(QtWidgets.QWidget):
 
     def _pause_for_scrub(self):
         self.playing = False
-        self.play_btn.setText("Play")
+        self.play_btn.setText("Play [Space]")
 
     def _scrubbed(self, value: int):
         self._render_frame(value)

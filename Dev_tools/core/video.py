@@ -23,7 +23,7 @@ except Exception:
     mp = None
     _HAS_MEDIAPIPE = False
 
-from core.utils import lowpass_ema
+from core.utils import lowpass_ema, LandmarkSmoother
 from core.config import DEV_ROOT
 
 POSE_MODEL_PATHS = {
@@ -183,13 +183,17 @@ def run_pose_landmarks_on_video(
         base_options=BaseOptions(model_asset_path=str(model_path)),
         running_mode=RunningMode.VIDEO,
         num_poses=1,
-        min_pose_detection_confidence=float(settings.get("det", 0.5)),
-        min_pose_presence_confidence=float(settings.get("prs", 0.7)),
-        min_tracking_confidence=float(settings.get("trk", 0.7)),
+        # Lowered thresholds for better tracking through occlusion (matches iOS)
+        min_pose_detection_confidence=float(settings.get("det", 0.4)),
+        min_pose_presence_confidence=float(settings.get("prs", 0.4)),
+        min_tracking_confidence=float(settings.get("trk", 0.3)),
         output_segmentation_masks=bool(settings.get("seg", False)),
     )
     landmarker = PoseLandmarker.create_from_options(options)
     fps_val = fps if fps and fps > 0 else 30.0
+    # Use LandmarkSmoother for One Euro Filter + outlier rejection (matches iOS)
+    smoother = LandmarkSmoother(max_jump_fraction=0.15)
+    use_advanced_smoothing = settings.get("advanced_smooth", True)
     ema_alpha = float(settings.get("ema", 0.0) or 0.0)
     prev_smoothed: Optional[np.ndarray] = None
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -219,7 +223,10 @@ def run_pose_landmarks_on_video(
                     ],
                     dtype=np.float32,
                 )
-                if ema_alpha > 0.0:
+                if use_advanced_smoothing:
+                    # One Euro Filter + outlier rejection (matches iOS behavior)
+                    pts = smoother.smooth(pts, time_ms)
+                elif ema_alpha > 0.0:
                     pts = lowpass_ema(prev_smoothed, pts, ema_alpha)
                     prev_smoothed = pts
                 else:
@@ -256,3 +263,131 @@ def run_pose_landmarks_on_video(
         landmarker.close()
 
     return results
+
+
+def detect_best_rotation(
+    video_path: Path,
+    settings: Dict,
+    model_path: Path,
+    sample_count: int = 5,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> int:
+    """
+    Sample frames at different rotations and return the one with best pose detection.
+    
+    Tests 0°, 90°, 180°, 270° rotations and returns the rotation that produces
+    the most confident pose detections.
+    """
+    if not _HAS_MEDIAPIPE:
+        return 0
+    
+    video_path = Path(video_path)
+    model_path = Path(model_path)
+    if not model_path.exists():
+        return 0
+    
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return 0
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total_frames < sample_count:
+        sample_count = max(1, total_frames)
+    
+    # Sample frames evenly distributed through the video
+    sample_indices = [int(i * total_frames / (sample_count + 1)) for i in range(1, sample_count + 1)]
+    
+    sample_frames = []
+    for idx in sample_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            sample_frames.append(frame)
+    cap.release()
+    
+    if not sample_frames:
+        return 0
+    
+    rotations = [0, 90, 180, 270]
+    rotation_scores: Dict[int, float] = {}
+    
+    for rotation in rotations:
+        if progress_cb:
+            progress_cb(f"Testing rotation {rotation}°...")
+        
+        # Create landmarker for this rotation test
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(model_path)),
+            running_mode=RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=float(settings.get("det", 0.5)),
+            min_pose_presence_confidence=float(settings.get("prs", 0.5)),
+            min_tracking_confidence=float(settings.get("trk", 0.5)),
+        )
+        landmarker = PoseLandmarker.create_from_options(options)
+        
+        total_score = 0.0
+        detections = 0
+        orientation_valid_count = 0
+        
+        try:
+            for frame in sample_frames:
+                rotated = rotate_frame_if_needed(frame, rotation)
+                mp_image = _mp_image_from_bgr(rotated)
+                result = landmarker.detect(mp_image)
+                
+                if result.pose_landmarks and len(result.pose_landmarks) > 0:
+                    landmarks = result.pose_landmarks[0]
+                    
+                    # Check body orientation - nose (0) should be above hips (23, 24)
+                    # In normalized coords, y increases downward, so nose.y < hip.y is correct
+                    nose_y = landmarks[0].y if len(landmarks) > 0 else 0.5
+                    left_hip_y = landmarks[23].y if len(landmarks) > 23 else 0.5
+                    right_hip_y = landmarks[24].y if len(landmarks) > 24 else 0.5
+                    avg_hip_y = (left_hip_y + right_hip_y) / 2
+                    
+                    # For portrait video, check if nose is above hips (correct orientation)
+                    # Allow some tolerance for lying down positions
+                    orientation_valid = nose_y < avg_hip_y + 0.15
+                    if orientation_valid:
+                        orientation_valid_count += 1
+                    
+                    # Calculate average confidence from key body landmarks
+                    # Use shoulders (11, 12), hips (23, 24), and wrists (15, 16)
+                    key_indices = [11, 12, 15, 16, 23, 24]
+                    confidences = []
+                    for i in key_indices:
+                        if i < len(landmarks):
+                            lm = landmarks[i]
+                            conf = getattr(lm, 'presence', getattr(lm, 'visibility', 0.5))
+                            confidences.append(conf)
+                    if confidences:
+                        total_score += sum(confidences) / len(confidences)
+                        detections += 1
+        finally:
+            landmarker.close()
+        
+        # Score is average confidence, weighted by detection rate AND orientation validity
+        if detections > 0:
+            avg_conf = total_score / detections
+            detection_rate = detections / len(sample_frames)
+            orientation_rate = orientation_valid_count / detections
+            # Orientation is critical - if most frames have wrong orientation, heavily penalize
+            rotation_scores[rotation] = avg_conf * detection_rate * (0.2 + 0.8 * orientation_rate)
+        else:
+            rotation_scores[rotation] = 0.0
+    
+    # Return rotation with highest score
+    if not rotation_scores:
+        return 0
+    
+    best_rotation = max(rotation_scores, key=rotation_scores.get)  # type: ignore
+    
+    # Only use non-zero rotation if it's significantly better
+    if best_rotation != 0 and rotation_scores[0] > 0:
+        improvement = rotation_scores[best_rotation] / rotation_scores[0]
+        if improvement < 1.2:  # Less than 20% improvement, stick with 0
+            return 0
+    
+    return best_rotation
+
